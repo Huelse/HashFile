@@ -1,0 +1,14 @@
+appname               = HashFile
+version               = 1.0.0
+display_name          = 文件哈希计算
+desc                  = 计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5 哈希值，支持批量处理与校验比对
+arch                  = x86_64
+source                = thirdparty
+maintainer            = Huelse
+maintainer_url        = https://github.com/Huelse
+distributor           = Huelse
+distributor_url       = https://github.com/Huelse
+desktop_uidir         = ui
+desktop_applaunchname = HashFile.Application
+service_port          = 17743
+checkport             = true

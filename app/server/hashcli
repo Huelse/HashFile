@@ -1,0 +1,130 @@
+#!/bin/bash
+# hashcli - File hash calculator for fnOS
+# Usage: hashcli [-a algo] [-r] [-c expected] [-j] <path>
+#   -a  Algorithm: sha256 (default), md5, sha1, sha512, all
+#   -r  Recursive directory processing
+#   -c  Expected hash for verification
+#   -j  JSON output
+
+ALGO="sha256"
+RECURSIVE=false
+EXPECTED=""
+JSON=false
+
+usage() {
+    echo "Usage: $(basename "$0") [-a algo] [-r] [-c expected] [-j] <path>" >&2
+    echo "  -a  sha256 (default), md5, sha1, sha512, all" >&2
+    echo "  -r  Recursive directory processing" >&2
+    echo "  -c  Verify against expected hash" >&2
+    echo "  -j  JSON output" >&2
+    exit 1
+}
+
+while getopts ":a:rc:j" opt; do
+    case $opt in
+        a) ALGO="$OPTARG" ;;
+        r) RECURSIVE=true ;;
+        c) EXPECTED="$OPTARG" ;;
+        j) JSON=true ;;
+        :) echo "Error: option -$OPTARG requires an argument" >&2; usage ;;
+        \?) echo "Error: unknown option -$OPTARG" >&2; usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+TARGET="${1:-}"
+[ -z "$TARGET" ] && usage
+
+if [ ! -e "$TARGET" ]; then
+    if $JSON; then
+        printf '{"success":false,"error":"Path not found: %s"}\n' "$TARGET"
+    else
+        echo "Error: path not found: $TARGET" >&2
+    fi
+    exit 1
+fi
+
+hash_cmd() {
+    case "$1" in
+        sha256) echo "sha256sum" ;;
+        md5)    echo "md5sum"    ;;
+        sha1)   echo "sha1sum"   ;;
+        sha512) echo "sha512sum" ;;
+        *)      echo ""          ;;
+    esac
+}
+
+compute_hash() {
+    local file="$1" algo="$2"
+    local cmd
+    cmd=$(hash_cmd "$algo")
+    [ -z "$cmd" ] && echo "" && return 1
+    "$cmd" -- "$file" 2>/dev/null | awk '{print $1}'
+}
+
+if [ "$ALGO" = "all" ]; then
+    ALGOS=(sha256 md5 sha1 sha512)
+else
+    ALGOS=("$ALGO")
+fi
+
+# Collect files
+FILES=()
+if [ -f "$TARGET" ]; then
+    FILES=("$TARGET")
+elif [ -d "$TARGET" ]; then
+    if $RECURSIVE; then
+        while IFS= read -r -d '' f; do FILES+=("$f"); done \
+            < <(find "$TARGET" -type f -print0 | sort -z)
+    else
+        while IFS= read -r -d '' f; do FILES+=("$f"); done \
+            < <(find "$TARGET" -maxdepth 1 -type f -print0 | sort -z)
+    fi
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    if $JSON; then
+        echo '{"success":true,"results":[]}'
+    else
+        echo "No files found."
+    fi
+    exit 0
+fi
+
+if $JSON; then
+    # Use Python -c (not heredoc) so stdin remains available for the pipe
+    {
+        for file in "${FILES[@]}"; do
+            for algo in "${ALGOS[@]}"; do
+                hash=$(compute_hash "$file" "$algo")
+                printf '%s\t%s\t%s\t%s\n' "$file" "$algo" "$hash" "$EXPECTED"
+            done
+        done
+    } | python3 -c "
+import sys, json
+results = []
+for line in sys.stdin:
+    parts = line.rstrip('\n').split('\t')
+    if len(parts) < 4:
+        continue
+    file_path, algo, hash_val, expected = parts[0], parts[1], parts[2], parts[3]
+    entry = {'file': file_path, 'algo': algo, 'hash': hash_val or None}
+    if expected:
+        entry['verified'] = (hash_val == expected)
+        entry['expected'] = expected
+    results.append(entry)
+print(json.dumps({'success': True, 'results': results}, ensure_ascii=False))
+"
+else
+    for file in "${FILES[@]}"; do
+        for algo in "${ALGOS[@]}"; do
+            hash=$(compute_hash "$file" "$algo")
+            if [ -n "$EXPECTED" ]; then
+                [ "$hash" = "$EXPECTED" ] && status="OK" || status="FAIL"
+                printf "%-8s  %s  %s  [%s]\n" "$algo" "$hash" "$file" "$status"
+            else
+                printf "%-8s  %s  %s\n" "$algo" "$hash" "$file"
+            fi
+        done
+    done
+fi

@@ -1,0 +1,28 @@
+{
+    "data-share":
+    {
+        "shares":
+        [
+            {
+                "name": "HashFile",
+                "permission":
+                {
+                    "rw":
+                    [
+                        "HashFile"
+                    ]
+                }
+            },
+            {
+                "name": "HashFile/data",
+                "permission":
+                {
+                    "rw":
+                    [
+                        "HashFile"
+                    ]
+                }
+            }
+        ]
+    }
+}

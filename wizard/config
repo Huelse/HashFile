@@ -1,0 +1,23 @@
+[
+  {
+    "stepTitle": "应用设置",
+    "items": [
+      {
+        "type": "text",
+        "field": "service_port",
+        "label": "应用端口",
+        "initValue": "17743",
+        "rules": [
+          {
+            "required": true,
+            "message": "请输入端口号"
+          },
+          {
+            "pattern": "^([1-9][0-9]{0,4})$",
+            "message": "端口号必须是 1-65535 之间的数字"
+          }
+        ]
+      }
+    ]
+  }
+]

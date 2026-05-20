@@ -1,0 +1,12 @@
+{
+    ".url": {
+        "HashFile.Application": {
+            "title": "HashFile",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "port": "${service_port}",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}

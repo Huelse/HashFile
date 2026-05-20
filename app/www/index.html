@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文件哈希计算</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>文件哈希计算</h1>
+      <p class="subtitle">支持 SHA-256 / SHA-512 / SHA-1 / MD5，可批量处理目录</p>
+    </header>
+
+    <section class="card form-card">
+      <div class="form-group">
+        <label for="path">文件 / 目录路径</label>
+        <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="form-group">
+        <label>哈希算法</label>
+        <div class="algo-group">
+          <label class="algo-chip selected"><input type="checkbox" value="sha256" checked><span>SHA-256</span></label>
+          <label class="algo-chip"><input type="checkbox" value="md5"><span>MD5</span></label>
+          <label class="algo-chip"><input type="checkbox" value="sha1"><span>SHA-1</span></label>
+          <label class="algo-chip"><input type="checkbox" value="sha512"><span>SHA-512</span></label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="timeout-sel">计算超时</label>
+        <select id="timeout-sel">
+          <option value="30">30 秒</option>
+          <option value="60" selected>1 分钟</option>
+          <option value="300">5 分钟</option>
+          <option value="0">无限制</option>
+        </select>
+      </div>
+
+      <div class="form-group check-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="recursive">
+          <span>递归处理子目录</span>
+        </label>
+      </div>
+
+      <div class="form-group" id="verify-group">
+        <label for="expected">校验值（可选）— 填入后自动比对结果</label>
+        <input type="text" id="expected" placeholder="粘贴期望的哈希值..." autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="form-actions">
+        <button id="submit" class="btn-primary">计算哈希</button>
+        <button id="abort-btn" class="btn-danger" hidden>中止</button>
+        <button id="clear-btn" class="btn-ghost">清空结果</button>
+      </div>
+    </section>
+
+    <div id="loading" class="loading" hidden>
+      <span class="spinner"></span> 计算中，请稍候…
+    </div>
+
+    <div id="error-box" class="error-box" hidden></div>
+
+    <section id="results" class="card results-card" hidden>
+      <div class="results-header">
+        <h2>计算结果</h2>
+        <span id="summary" class="summary"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-file">文件</th>
+              <th class="col-algo">算法</th>
+              <th class="col-hash">哈希值</th>
+              <th class="col-status" id="th-status">状态</th>
+              <th class="col-action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
