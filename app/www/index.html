@@ -55,6 +55,7 @@
         <button id="submit" class="btn-primary">计算哈希</button>
         <button id="abort-btn" class="btn-danger" hidden>中止</button>
         <button id="clear-btn" class="btn-ghost">清空结果</button>
+        <button id="history-btn" class="btn-ghost">历史记录</button>
       </div>
     </section>
 
@@ -84,6 +85,21 @@
         </table>
       </div>
     </section>
+  </div>
+
+  <!-- History Modal -->
+  <div id="history-overlay" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h2 id="modal-title">历史记录</h2>
+        <button id="history-close" class="btn-icon" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-search">
+        <input type="text" id="history-search" placeholder="搜索路径或哈希值…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="modal-body" id="history-list"></div>
+      <div class="modal-footer" id="history-pager"></div>
+    </div>
   </div>
 
   <script src="app.js"></script>

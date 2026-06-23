@@ -8,20 +8,26 @@ if (_initPath) {
   setTimeout(run, 200);
 }
 
-const pathInput     = $('path');
-const recursiveChk  = $('recursive');
-const expectedInput = $('expected');
-const timeoutSel    = $('timeout-sel');
-const submitBtn     = $('submit');
-const abortBtn      = $('abort-btn');
-const clearBtn      = $('clear-btn');
-const verifyGroup   = $('verify-group');
-const loadingEl     = $('loading');
-const errorBox      = $('error-box');
-const resultsEl     = $('results');
-const resultsBody   = $('results-body');
-const summaryEl     = $('summary');
-const thStatus      = $('th-status');
+const pathInput      = $('path');
+const recursiveChk   = $('recursive');
+const expectedInput  = $('expected');
+const timeoutSel     = $('timeout-sel');
+const submitBtn      = $('submit');
+const abortBtn       = $('abort-btn');
+const clearBtn       = $('clear-btn');
+const historyBtn     = $('history-btn');
+const historySearch  = $('history-search');
+const historyPager   = $('history-pager');
+const verifyGroup    = $('verify-group');
+const loadingEl      = $('loading');
+const errorBox       = $('error-box');
+const resultsEl      = $('results');
+const resultsBody    = $('results-body');
+const summaryEl      = $('summary');
+const thStatus       = $('th-status');
+const historyOverlay = $('history-overlay');
+const historyList    = $('history-list');
+const historyClose   = $('history-close');
 
 const ALGO_ORDER = ['sha256', 'md5', 'sha1', 'sha512'];
 
@@ -118,6 +124,106 @@ clearBtn.addEventListener('click', () => {
   clearError();
 });
 
+// ── History ──────────────────────────────────────────────────
+let _hPage = 1;
+let _hQuery = '';
+let _hTimer = null;
+
+historyBtn.addEventListener('click', openHistory);
+historyClose.addEventListener('click', closeHistory);
+historyOverlay.addEventListener('click', e => { if (e.target === historyOverlay) closeHistory(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !historyOverlay.hidden) closeHistory(); });
+
+historySearch.addEventListener('input', () => {
+  clearTimeout(_hTimer);
+  _hTimer = setTimeout(() => {
+    _hQuery = historySearch.value.trim();
+    _hPage  = 1;
+    loadHistory();
+  }, 300);
+});
+
+function openHistory() {
+  historySearch.value = '';
+  _hQuery = '';
+  _hPage  = 1;
+  historyOverlay.hidden = false;
+  loadHistory();
+}
+
+function closeHistory() {
+  historyOverlay.hidden = true;
+}
+
+async function loadHistory() {
+  historyList.innerHTML = '<p class="hist-empty">加载中…</p>';
+  historyPager.innerHTML = '';
+  const params = new URLSearchParams({ page: _hPage });
+  if (_hQuery) params.set('q', _hQuery);
+  try {
+    const res  = await fetch('/api/history?' + params);
+    const data = await res.json();
+    if (!data.success) { historyList.innerHTML = `<p class="hist-empty">${esc(data.error)}</p>`; return; }
+    renderHistoryList(data.entries, data.total);
+    renderPager(data.page, data.pages);
+  } catch {
+    historyList.innerHTML = '<p class="hist-empty">加载失败</p>';
+  }
+}
+
+function renderHistoryList(entries, total) {
+  if (entries.length === 0) {
+    historyList.innerHTML = '<p class="hist-empty">暂无历史记录</p>';
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'hist-table';
+  table.innerHTML = `
+    <thead><tr>
+      <th>文件</th><th>算法</th><th>哈希值</th><th>时间</th><th></th>
+    </tr></thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector('tbody');
+
+  for (const entry of entries) {
+    const tr = document.createElement('tr');
+    const baseName = entry.path.split('/').pop() || entry.path;
+    const hashShort = entry.hash ? entry.hash.slice(0, 16) + '…' : '—';
+    tr.innerHTML = `
+      <td class="ht-path ht-copy" title="${esc(entry.path)}">${esc(baseName)}</td>
+      <td class="ht-algo">${fmtAlgo(entry.algo)}</td>
+      <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(hashShort)}</code></td>
+      <td class="ht-time">${esc(entry.created_at)}</td>
+      <td class="ht-action"><button class="btn-copy hist-del">删除</button></td>
+    `;
+    bindCopyCell(tr.querySelector('.ht-path'), entry.path, baseName);
+    if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash, hashShort);
+    tr.querySelector('.hist-del').addEventListener('click', async () => {
+      try { await fetch(`/api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
+      tr.remove();
+      if (!tbody.querySelector('tr')) loadHistory();
+    });
+    tbody.appendChild(tr);
+  }
+
+  historyList.innerHTML = '';
+  historyList.appendChild(table);
+}
+
+function renderPager(page, pages) {
+  if (pages <= 1) { historyPager.innerHTML = ''; return; }
+  historyPager.innerHTML = `
+    <button class="pg-btn" id="pg-prev" ${page === 1 ? 'disabled' : ''}>&#8249;</button>
+    <span class="pg-info">第 ${page} / ${pages} 页</span>
+    <button class="pg-btn" id="pg-next" ${page === pages ? 'disabled' : ''}>&#8250;</button>
+  `;
+  if (page > 1)     historyPager.querySelector('#pg-prev').addEventListener('click', () => { _hPage = page - 1; loadHistory(); });
+  if (page < pages) historyPager.querySelector('#pg-next').addEventListener('click', () => { _hPage = page + 1; loadHistory(); });
+}
+
+
 // ── State ────────────────────────────────────────────────────
 function mergeResults(newResults) {
   for (const r of newResults) {
@@ -208,6 +314,20 @@ function renderFromState() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+function bindCopyCell(cell, fullText, shortText) {
+  cell.addEventListener('click', () => {
+    const done = () => {
+      cell.classList.add('ht-copied');
+      setTimeout(() => cell.classList.remove('ht-copied'), 1000);
+    };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(fullText).then(done).catch(() => fallbackCopy(fullText, { textContent: '', disabled: false }, done));
+    } else {
+      fallbackCopy(fullText, { textContent: '', disabled: false }, done);
+    }
+  });
+}
+
 function fmtAlgo(a) {
   return a === 'md5' ? 'MD5' : a.replace(/^sha(\d+)$/, 'SHA-$1').toUpperCase();
 }

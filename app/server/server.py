@@ -3,13 +3,17 @@
 
 import os
 import json
+import sqlite3
 import subprocess
 import threading
+from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 PORT = int(os.environ.get("service_port", 17743))
-WWW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www")
+WWW_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www")
+DATA_DIR = os.environ.get("DATA_DIR") or "/var/apps/HashFile/shares/HashFile"
+DB_PATH  = os.path.join(DATA_DIR, "data.db")
 
 ALGO_CMDS = {
     "sha256": "sha256sum",
@@ -17,6 +21,71 @@ ALGO_CMDS = {
     "sha1":   "sha1sum",
     "sha512": "sha512sum",
 }
+
+_db_lock = threading.Lock()
+
+
+def _init_db():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA encoding = 'UTF-8'")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS hash_history (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                path       TEXT    NOT NULL,
+                algo       TEXT    NOT NULL,
+                hash       TEXT,
+                created_at TEXT    NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_path ON hash_history(path)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_hash ON hash_history(hash)")
+
+
+def _save_history(results):
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _db_lock:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.executemany(
+                "INSERT INTO hash_history (path, algo, hash, created_at) VALUES (?,?,?,?)",
+                [(r["file"], r["algo"], r.get("hash"), created_at) for r in results]
+            )
+
+
+PER_PAGE = 20
+
+def _list_history(q=None, page=1):
+    offset = (page - 1) * PER_PAGE
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if q:
+            pattern = f"%{q}%"
+            rows = conn.execute(
+                "SELECT id, path, algo, hash, created_at FROM hash_history"
+                " WHERE path LIKE ? OR hash LIKE ?"
+                " ORDER BY id DESC LIMIT ? OFFSET ?",
+                (pattern, pattern, PER_PAGE, offset)
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM hash_history WHERE path LIKE ? OR hash LIKE ?",
+                (pattern, pattern)
+            ).fetchone()[0]
+        else:
+            rows = conn.execute(
+                "SELECT id, path, algo, hash, created_at FROM hash_history"
+                " ORDER BY id DESC LIMIT ? OFFSET ?",
+                (PER_PAGE, offset)
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM hash_history"
+            ).fetchone()[0]
+    return [dict(r) for r in rows], total
+
+
+def _delete_history(entry_id):
+    with _db_lock:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("DELETE FROM hash_history WHERE id = ?", (entry_id,))
 
 
 def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
@@ -80,8 +149,26 @@ class HashHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/hash":
             self._handle_api(parsed)
+        elif parsed.path == "/api/history":
+            self._handle_history_list(parsed)
         else:
             super().do_GET()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/history":
+            qs = parse_qs(parsed.query)
+            raw_id = qs.get("id", [None])[0]
+            if not raw_id:
+                return self._json({"success": False, "error": "id required"}, 400)
+            try:
+                _delete_history(int(raw_id))
+                self._json({"success": True})
+            except Exception as exc:
+                self._json({"success": False, "error": str(exc)}, 500)
+        else:
+            self.send_response(405)
+            self.end_headers()
 
     def _handle_api(self, parsed):
         qs = parse_qs(parsed.query)
@@ -107,6 +194,10 @@ class HashHandler(SimpleHTTPRequestHandler):
 
         try:
             results = compute_hashes(path, algos, recursive, expected, sub_timeout)
+            try:
+                _save_history(results)
+            except Exception:
+                pass
             self._json({"success": True, "path": path, "results": results})
         except Exception as exc:
             self._json({"success": False, "error": str(exc)}, 500)
@@ -120,11 +211,24 @@ class HashHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_history_list(self, parsed):
+        qs = parse_qs(parsed.query)
+        q    = qs.get("q",    [""])[0].strip() or None
+        page = max(1, int(qs.get("page", ["1"])[0]))
+        try:
+            entries, total = _list_history(q, page)
+            pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+            self._json({"success": True, "entries": entries,
+                        "total": total, "page": page, "pages": pages})
+        except Exception as exc:
+            self._json({"success": False, "error": str(exc)}, 500)
+
     def log_message(self, fmt, *args):
         pass  # quiet — errors only
 
 
 if __name__ == "__main__":
+    _init_db()
     server = ThreadingHTTPServer(("", PORT), HashHandler)
     print(f"HashFile listening on :{PORT}", flush=True)
     server.serve_forever()

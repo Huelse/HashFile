@@ -12,16 +12,6 @@
                         "HashFile"
                     ]
                 }
-            },
-            {
-                "name": "HashFile/data",
-                "permission":
-                {
-                    "rw":
-                    [
-                        "HashFile"
-                    ]
-                }
             }
         ]
     }
