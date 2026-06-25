@@ -127,20 +127,17 @@ clearBtn.addEventListener('click', () => {
 // ── History ──────────────────────────────────────────────────
 let _hPage = 1;
 let _hQuery = '';
-let _hTimer = null;
 
 historyBtn.addEventListener('click', openHistory);
 historyClose.addEventListener('click', closeHistory);
 historyOverlay.addEventListener('click', e => { if (e.target === historyOverlay) closeHistory(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !historyOverlay.hidden) closeHistory(); });
 
-historySearch.addEventListener('input', () => {
-  clearTimeout(_hTimer);
-  _hTimer = setTimeout(() => {
-    _hQuery = historySearch.value.trim();
-    _hPage  = 1;
-    loadHistory();
-  }, 300);
+historySearch.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  _hQuery = historySearch.value.trim();
+  _hPage  = 1;
+  loadHistory();
 });
 
 function openHistory() {
@@ -319,6 +316,7 @@ function bindCopyCell(cell, fullText, shortText) {
     const done = () => {
       cell.classList.add('ht-copied');
       setTimeout(() => cell.classList.remove('ht-copied'), 1000);
+      showModalToast();
     };
     if (navigator.clipboard) {
       navigator.clipboard.writeText(fullText).then(done).catch(() => fallbackCopy(fullText, { textContent: '', disabled: false }, done));
@@ -326,6 +324,22 @@ function bindCopyCell(cell, fullText, shortText) {
       fallbackCopy(fullText, { textContent: '', disabled: false }, done);
     }
   });
+}
+
+function showModalToast() {
+  const toast = $('modal-toast');
+  clearTimeout(toast._showTimer);
+  clearTimeout(toast._timer);
+  const show = () => {
+    toast.hidden = false;
+    toast._timer = setTimeout(() => { toast.hidden = true; }, 1500);
+  };
+  if (!toast.hidden) {
+    toast.hidden = true;
+    toast._showTimer = setTimeout(show, 60);
+  } else {
+    show();
+  }
 }
 
 function fmtAlgo(a) {

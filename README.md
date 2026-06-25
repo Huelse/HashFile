@@ -6,9 +6,8 @@
 <img width="1701" height="1114" alt="image" src="https://github.com/user-attachments/assets/8250916e-b028-43e8-ba19-3f8dfe56ad6a" />
 
 
-
 ## 说明
 
-* 默认使用**root**权限方便读取并计算哈希，或者run-as改为"package"并在应用设置内添加文件夹**只读**权限
-* `文件右键-详细信息-复制原始路径`粘贴到本应用路径输入框内即可
+* `文件右键-详细信息-复制原始路径`粘贴到本应用路径输入框内即可计算
+* 如提示无权限，请先在应用设置内添加文件夹**只读**权限
 * `app/ui/config` 中添加 fileTypes 可右键打开方式并计算文件哈希值，例如：`"fileTypes": ["mp4", "mkv", "avi", "zip", "rar", "7z"]`

@@ -303,6 +303,10 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 .btn-copy:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .btn-copy:disabled { opacity: .6; }
 
+/* History button — no border */
+#history-btn { border-color: transparent; }
+#history-btn:hover { border-color: transparent; }
+
 /* Modal */
 .modal-overlay {
   position: fixed;
@@ -315,6 +319,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 }
 
 .modal {
+  position: relative;
   background: var(--surface);
   border-radius: var(--radius);
   box-shadow: 0 8px 32px rgba(0,0,0,.18);
@@ -323,6 +328,22 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.modal-toast {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ok);
+  color: #fff;
+  padding: 7px 22px;
+  border-radius: 0 0 8px 8px;
+  font-size: .8125rem;
+  font-weight: 500;
+  z-index: 10;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .modal-header {
