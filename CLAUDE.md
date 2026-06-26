@@ -57,3 +57,4 @@ app/
 - **端口** 默认为 `17743`，可通过 `service_port` 环境变量配置（由 fnOS 根据向导输入设置）。
 - **文件类型右键集成** — 在 `app/ui/config` 的 `fileTypes` 中添加扩展名，即可在 fnOS 文件管理器中启用"用 HashFile 打开"功能。
 - **权限** — 默认以 `root` 运行以便无限制读取文件；可改为 `package`，并在 fnOS 应用设置中为指定文件夹授予只读权限。
+- **统一网关与用户隔离** — `app/ui/config` 通过 `gatewaySocket`（`app.sock`）和 `gatewayPrefix`（`/app/HashFile`）注册到 fnOS 统一网关。网关在转发前完成登录校验并注入 `X-Trim-Userid` 等身份头。`server.py` 同时监听 TCP 端口（健康检查/直连）与位于 `${TRIM_APPDEST}/app.sock` 的 Unix Socket（网关转发），并在路由前剥离 `gatewayPrefix`。历史记录按 `X-Trim-Userid`（即 uid，绝不信任客户端传入的 ID）存储与过滤，删除也限定本人 uid；直连端口无身份头时 uid 为空字符串。前端 API 一律使用相对路径，以便在网关前缀和直连两种方式下均可工作。

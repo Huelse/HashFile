@@ -99,7 +99,7 @@ async function run() {
   clearError();
 
   try {
-    const res = await fetch('/api/hash?' + params, { signal: activeController.signal });
+    const res = await fetch('api/hash?' + params, { signal: activeController.signal });
     const data = await res.json();
     if (!data.success) { showError(data.error || '计算失败'); return; }
     mergeResults(data.results);
@@ -158,7 +158,7 @@ async function loadHistory() {
   const params = new URLSearchParams({ page: _hPage });
   if (_hQuery) params.set('q', _hQuery);
   try {
-    const res  = await fetch('/api/history?' + params);
+    const res  = await fetch('api/history?' + params);
     const data = await res.json();
     if (!data.success) { historyList.innerHTML = `<p class="hist-empty">${esc(data.error)}</p>`; return; }
     renderHistoryList(data.entries, data.total);
@@ -198,7 +198,7 @@ function renderHistoryList(entries, total) {
     bindCopyCell(tr.querySelector('.ht-path'), entry.path, baseName);
     if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash, hashShort);
     tr.querySelector('.hist-del').addEventListener('click', async () => {
-      try { await fetch(`/api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
+      try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
       if (!tbody.querySelector('tr')) loadHistory();
     });

@@ -4,8 +4,10 @@
             "title": "HashFile",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
-            "port": "${service_port}",
-            "url": "/",
+            "protocol": "",
+            "gatewaySocket": "app.sock",
+            "gatewayPrefix": "/app/HashFile",
+            "url": "/app/HashFile",
             "allUsers": true
         }
     }
