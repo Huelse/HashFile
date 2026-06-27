@@ -41,7 +41,7 @@ def _init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS hash_history (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                uid        TEXT    NOT NULL DEFAULT '',
+                uid        TEXT    NOT NULL,
                 path       TEXT    NOT NULL,
                 algo       TEXT    NOT NULL,
                 hash       TEXT,
@@ -49,9 +49,9 @@ def _init_db():
             )
         """)
         # 兼容旧库：补充 uid 列
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
-        if "uid" not in cols:
-            conn.execute("ALTER TABLE hash_history ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+        # cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
+        # if "uid" not in cols:
+        #     conn.execute("ALTER TABLE hash_history ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_uid ON hash_history(uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_path ON hash_history(path)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_hash ON hash_history(hash)")
