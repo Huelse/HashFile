@@ -10,9 +10,8 @@ import threading
 import socketserver
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
-from http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-PORT = int(os.environ.get("service_port", 17743))
 WWW_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www")
 DATA_DIR = os.environ.get("DATA_DIR") or "/var/apps/HashFile/shares/HashFile"
 DB_PATH  = os.path.join(DATA_DIR, "data.db")
@@ -282,17 +281,20 @@ class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 
 if __name__ == "__main__":
+    if not SOCKET_PATH:
+        print(
+            "HashFile: SOCKET_PATH not configured. "
+            "Set GATEWAY_SOCKET or TRIM_APPDEST environment variable.",
+            flush=True,
+        )
+        raise SystemExit(1)
+
     _init_db()
 
-    if SOCKET_PATH:
-        try:
-            os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
-            usock = ThreadingUnixHTTPServer(SOCKET_PATH, HashHandler)
-            threading.Thread(target=usock.serve_forever, daemon=True).start()
-            print(f"HashFile gateway socket at {SOCKET_PATH}", flush=True)
-        except Exception as exc:
-            print(f"HashFile: failed to bind gateway socket {SOCKET_PATH}: {exc}", flush=True)
+    socket_dir = os.path.dirname(SOCKET_PATH)
+    if socket_dir:
+        os.makedirs(socket_dir, exist_ok=True)
 
-    server = ThreadingHTTPServer(("", PORT), HashHandler)
-    print(f"HashFile listening on :{PORT}", flush=True)
+    server = ThreadingUnixHTTPServer(SOCKET_PATH, HashHandler)
+    print(f"HashFile gateway socket at {SOCKET_PATH}", flush=True)
     server.serve_forever()

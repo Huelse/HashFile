@@ -10,5 +10,3 @@ distributor           = Huelse
 distributor_url       = https://github.com/Huelse
 desktop_uidir         = ui
 desktop_applaunchname = HashFile.Application
-service_port          = 17743
-checkport             = true
