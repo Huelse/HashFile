@@ -178,7 +178,7 @@ function renderHistoryList(entries, total) {
   table.className = 'hist-table';
   table.innerHTML = `
     <thead><tr>
-      <th>文件</th><th>算法</th><th>哈希值</th><th>时间</th><th></th>
+      <th>文件</th><th>算法</th><th>哈希值</th><th>时间</th><th>操作</th>
     </tr></thead>
     <tbody></tbody>
   `;

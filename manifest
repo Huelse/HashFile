@@ -1,7 +1,7 @@
 appname               = HashFile
 version               = 1.1.3
 display_name          = 文件哈希计算
-desc                  = 计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5 哈希值，支持批量处理与校验比对。使用前先在应用设置内添加文件夹**只读**权限，`文件右键-详细信息-复制原始路径`粘贴到路径输入框内即可计算。
+desc                  = 计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5 哈希值，支持批量处理与校验比对。使用前先在应用设置内添加文件夹<b>只读</b>权限，<b>文件右键-详细信息-复制原始路径</b>粘贴到路径输入框内即可计算。
 arch                  = x86_64
 source                = thirdparty
 maintainer            = Huelse
