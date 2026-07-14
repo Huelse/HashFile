@@ -120,23 +120,26 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
             cmd = ALGO_CMDS.get(a)
             if not cmd:
                 continue
-            try:
-                proc = subprocess.run(
-                    [cmd, "--", f],
-                    capture_output=True, text=True, timeout=sub_timeout
-                )
-                if proc.returncode == 0:
-                    hash_val = proc.stdout.split()[0]
-                    err = None
-                else:
-                    hash_val = None
-                    err = proc.stderr.strip() or "hash command failed"
-            except subprocess.TimeoutExpired:
-                hash_val = None
-                err = f"{cmd} timed out after {sub_timeout}s"
-            except FileNotFoundError:
-                hash_val = None
-                err = f"command not found: {cmd}"
+            hash_val = None
+            err = None
+            # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
+            # 不再依赖子进程 stderr 文本（受 locale 影响）
+            if not os.access(f, os.R_OK):
+                err = "无读取权限，请先至应用设置内添加文件夹读取权限"
+            else:
+                try:
+                    proc = subprocess.run(
+                        [cmd, "--", f],
+                        capture_output=True, text=True, timeout=sub_timeout
+                    )
+                    if proc.returncode == 0:
+                        hash_val = proc.stdout.split()[0]
+                    else:
+                        err = proc.stderr.strip() or "hash command failed"
+                except subprocess.TimeoutExpired:
+                    err = f"{cmd} timed out after {sub_timeout}s"
+                except FileNotFoundError:
+                    err = f"command not found: {cmd}"
 
             entry = {"file": f, "algo": a, "hash": hash_val}
             if err:

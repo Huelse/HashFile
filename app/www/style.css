@@ -284,9 +284,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   color: #b45309;
   font-size: .75rem;
   max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
 }
 .err-icon { font-style: normal; }
 
