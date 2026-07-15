@@ -8,6 +8,7 @@
             "gatewaySocket": "app.sock",
             "gatewayPrefix": "/app/HashFile",
             "url": "/app/HashFile",
+            "fileTypes": ["mp4", "mkv", "avi", "zip", "rar", "7z", "iso", "ova", "fpk"],
             "allUsers": true
         }
     }
