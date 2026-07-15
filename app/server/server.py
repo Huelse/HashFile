@@ -137,11 +137,20 @@ def _run_hash_task(task, path, algos, recursive, expected, sub_timeout):
 def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None):
 
     files = []
+    walk_errors = []  # 收集 os.walk 遇到的子目录 PermissionError.filename
     if os.path.isfile(path):
         files = [path]
     elif os.path.isdir(path):
+        # 顶层目录预检读权限：不可读时直接给出可操作提示，避免 os.walk/listdir
+        # 静默吞错（walk 默认 onerror=None）或抛 raw PermissionError
+        if not os.access(path, os.R_OK):
+            raise PermissionError("无读取权限，请先至应用设置内添加文件夹读取权限")
         if recursive:
-            for root, dirs, names in os.walk(path):
+            def _on_walk_error(err):
+                # os.walk 默认会静默吞掉 scandir 抛出的 OSError，必须显式收集
+                if isinstance(err, PermissionError):
+                    walk_errors.append(err.filename)
+            for root, dirs, names in os.walk(path, onerror=_on_walk_error):
                 if task is not None and task["cancelled"]:
                     return []
                 dirs.sort()
@@ -155,9 +164,20 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
             )
 
     if task is not None:
-        task["total"] = len(files) * len(algos)
+        # walk_errors 会在循环前作为 error 行预填入 results，每条计为 1
+        task["total"] = len(files) * len(algos) + len(walk_errors)
 
     results = []
+    # 子目录无读取权限：每个失败目录追加一条 error 行，让用户看到哪些目录被跳过。
+    # algo 字段填 algos[0] 只为对齐数据形状，前端 flattenState() 按 ALGO_ORDER 过滤。
+    if walk_errors:
+        first_algo = algos[0]
+        for d in walk_errors:
+            results.append({"file": d, "algo": first_algo, "hash": None,
+                            "error": "无读取权限，请先至应用设置内添加文件夹读取权限"})
+        if task is not None:
+            task["done"] = len(results)
+
     for f in files:
         for a in algos:
             if task is not None and task["cancelled"]:

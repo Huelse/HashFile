@@ -44,6 +44,15 @@ if [ ! -e "$TARGET" ]; then
     exit 1
 fi
 
+if [ -d "$TARGET" ] && [ ! -r "$TARGET" ]; then
+    if $JSON; then
+        printf '{"success":false,"error":"无读取权限，请先至应用设置内添加文件夹读取权限"}\n'
+    else
+        echo "Error: 无读取权限，请先至应用设置内添加文件夹读取权限" >&2
+    fi
+    exit 1
+fi
+
 hash_cmd() {
     case "$1" in
         sha256) echo "sha256sum" ;;
