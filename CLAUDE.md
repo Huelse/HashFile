@@ -21,11 +21,12 @@ GATEWAY_SOCKET=/tmp/hashfile.sock python3 app/server/server.py
 socat TCP-LISTEN:17743,fork,reuseaddr UNIX-CONNECT:/tmp/hashfile.sock &
 ```
 
-测试 API 接口：
+测试 API 接口（哈希计算为异步任务，提交后轮询状态）：
 
 ```bash
-curl "http://localhost:17743/api/hash?path=/tmp&algo=sha256"
-curl "http://localhost:17743/api/hash?path=/tmp/file.iso&algo=sha256,md5&expected=abc123"
+curl "http://localhost:17743/api/hash?path=/tmp&algo=sha256"          # → {"success":true,"task":"<id>"}
+curl "http://localhost:17743/api/hash/status?id=<id>"                 # → running / done+results
+curl -X DELETE "http://localhost:17743/api/hash?id=<id>"              # 取消任务
 ```
 
 测试命令行工具：
@@ -48,15 +49,15 @@ app/
   ui/config           # fnOS iframe 嵌入配置及文件类型关联
   www/                # 静态前端（index.html、app.js、style.css）
   server/
-    server.py         # ThreadingUnixHTTPServer — 提供 www/ 静态文件及 GET /api/hash
+    server.py         # ThreadingUnixHTTPServer — 提供 www/ 静态文件、/api/hash 异步任务及 /api/history
     hashcli           # 独立 Bash CLI 工具（逻辑与 server.py 一致）
 ```
 
 ## 关键设计要点
 
 - **无构建步骤** — 前端为纯 HTML/JS/CSS，不使用任何打包工具。
-- **哈希计算** 通过 Python 中的 `subprocess.run` 和 Bash CLI 中的直接调用，委托给系统命令（`sha256sum`、`md5sum` 等）执行。
-- **API** 只有一个接口 `GET /api/hash`，通过 query 参数传递：`path`、`algo`（逗号分隔或 `all`）、`recursive`、`expected`、`timeout`。
+- **哈希计算** 委托给系统命令（`sha256sum`、`md5sum` 等）执行：服务器用 `subprocess.Popen`（句柄挂在任务上，取消时可 kill），Bash CLI 直接调用。`timeout` 参数是单个文件的哈希超时，不是总时长。
+- **API 为异步任务模式** — fnOS 统一网关对代理请求有约 5 分钟固定超时（应用端不可配置），大文件同步计算会被 504 掐断。`GET /api/hash`（参数：`path`、`algo` 逗号分隔或 `all`、`recursive`、`expected`、`timeout`）提交任务并立即返回 `task` id；`GET /api/hash/status?id=` 轮询进度（`done`/`total`）与结果；`DELETE /api/hash?id=` 取消并杀掉哈希子进程。任务按 uid 隔离，结束后保留 1 小时。
 - **前端状态** 在 `app.js` 中使用 `Map<filePath, Map<algo, result>>` 存储；多次计算的结果会合并而非替换。
 - **打包** — 使用 fnOS 开发者工具构建 `.fpk`（工具不在本仓库中）。`.gitignore` 已排除 `*.fpk`。
 - **无 TCP 端口** — 服务器只监听 Unix Socket（`${TRIM_APPDEST}/app.sock`），不对外暴露 TCP 端口。

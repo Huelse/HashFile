@@ -3,6 +3,8 @@
 
 import os
 import json
+import time
+import uuid
 import socket
 import sqlite3
 import subprocess
@@ -96,7 +98,43 @@ def _delete_history(entry_id, uid):
             conn.execute("DELETE FROM hash_history WHERE id = ? AND uid = ?", (entry_id, uid))
 
 
-def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
+# ── 异步哈希任务 ──────────────────────────────────────────────
+# 统一网关对代理请求有约 5 分钟的固定超时（应用端不可配置），大文件的
+# 同步计算会被网关以 504 掐断。因此 /api/hash 只提交任务并立即返回
+# task id，由后台线程计算，前端轮询 /api/hash/status 获取进度与结果。
+_tasks = {}
+_tasks_lock = threading.Lock()
+TASK_TTL = 3600  # 已结束任务保留 1 小时，供前端（含刷新后）取结果
+
+
+def _purge_tasks():
+    now = time.time()
+    with _tasks_lock:
+        stale = [tid for tid, t in _tasks.items()
+                 if t["finished_at"] and now - t["finished_at"] > TASK_TTL]
+        for tid in stale:
+            del _tasks[tid]
+
+
+def _run_hash_task(task, path, algos, recursive, expected, sub_timeout):
+    try:
+        results = compute_hashes(path, algos, recursive, expected, sub_timeout, task)
+        try:
+            if results:
+                _save_history(results, task["uid"])
+        except Exception:
+            pass
+        task["results"] = results
+        task["status"] = "cancelled" if task["cancelled"] else "done"
+    except Exception as exc:
+        task["error"] = str(exc)
+        task["status"] = "error"
+    finally:
+        task["proc"] = None
+        task["finished_at"] = time.time()
+
+
+def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None):
 
     files = []
     if os.path.isfile(path):
@@ -104,6 +142,8 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
     elif os.path.isdir(path):
         if recursive:
             for root, dirs, names in os.walk(path):
+                if task is not None and task["cancelled"]:
+                    return []
                 dirs.sort()
                 for name in sorted(names):
                     files.append(os.path.join(root, name))
@@ -114,9 +154,14 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
                 if os.path.isfile(os.path.join(path, f))
             )
 
+    if task is not None:
+        task["total"] = len(files) * len(algos)
+
     results = []
     for f in files:
         for a in algos:
+            if task is not None and task["cancelled"]:
+                return results
             cmd = ALGO_CMDS.get(a)
             if not cmd:
                 continue
@@ -128,14 +173,37 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
                 err = "无读取权限，请先至应用设置内添加文件夹读取权限"
             else:
                 try:
-                    proc = subprocess.run(
+                    # 用 Popen 而非 subprocess.run：把进程句柄挂到任务上，
+                    # 取消时可直接 kill 正在计算的子进程
+                    proc = subprocess.Popen(
                         [cmd, "--", f],
-                        capture_output=True, text=True, timeout=sub_timeout
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                     )
+                    if task is not None:
+                        task["proc"] = proc
+                        # 发布句柄后重查取消标志，堵住取消落在 Popen 与句柄
+                        # 发布之间的窗口：取消方看到句柄则由它 kill，否则这里自行 kill
+                        if task["cancelled"]:
+                            proc.kill()
+                    try:
+                        out, errout = proc.communicate(timeout=sub_timeout)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate()
+                        raise
+                    finally:
+                        if task is not None:
+                            task["proc"] = None
+                    if task is not None and task["cancelled"]:
+                        return results
                     if proc.returncode == 0:
-                        hash_val = proc.stdout.split()[0]
+                        parts = out.split()
+                        if parts:
+                            hash_val = parts[0]
+                        else:
+                            err = f"{cmd} produced no output"
                     else:
-                        err = proc.stderr.strip() or "hash command failed"
+                        err = errout.strip() or "hash command failed"
                 except subprocess.TimeoutExpired:
                     err = f"{cmd} timed out after {sub_timeout}s"
                 except FileNotFoundError:
@@ -148,6 +216,8 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None):
                 entry["verified"] = (hash_val == expected)
                 entry["expected"] = expected
             results.append(entry)
+            if task is not None:
+                task["done"] = len(results)
 
     return results
 
@@ -188,6 +258,8 @@ class HashHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/hash":
             self._handle_api(parsed)
+        elif parsed.path == "/api/hash/status":
+            self._handle_hash_status(parsed)
         elif parsed.path == "/api/history":
             self._handle_history_list(parsed)
         else:
@@ -197,7 +269,9 @@ class HashHandler(SimpleHTTPRequestHandler):
         if self._normalize_path():
             return
         parsed = urlparse(self.path)
-        if parsed.path == "/api/history":
+        if parsed.path == "/api/hash":
+            self._handle_hash_cancel(parsed)
+        elif parsed.path == "/api/history":
             qs = parse_qs(parsed.query)
             raw_id = qs.get("id", [None])[0]
             if not raw_id:
@@ -233,15 +307,64 @@ class HashHandler(SimpleHTTPRequestHandler):
         raw_timeout = int(qs.get("timeout", ["60"])[0])
         sub_timeout = raw_timeout if raw_timeout > 0 else None
 
-        try:
-            results = compute_hashes(path, algos, recursive, expected, sub_timeout)
+        task = {
+            "id": uuid.uuid4().hex,
+            "uid": self._uid(),
+            "path": path,
+            "status": "running",
+            "cancelled": False,
+            "proc": None,
+            "results": None,
+            "error": None,
+            "done": 0,
+            "total": None,
+            "finished_at": None,
+        }
+        _purge_tasks()
+        with _tasks_lock:
+            _tasks[task["id"]] = task
+        threading.Thread(
+            target=_run_hash_task,
+            args=(task, path, algos, recursive, expected, sub_timeout),
+            daemon=True,
+        ).start()
+        self._json({"success": True, "task": task["id"]}, 202)
+
+    def _get_task(self, parsed):
+        """按 id 取任务；不存在或不属于当前 uid 时返回 None（不泄露他人任务）。"""
+        tid = parse_qs(parsed.query).get("id", [""])[0]
+        with _tasks_lock:
+            task = _tasks.get(tid)
+        if not task or task["uid"] != self._uid():
+            return None
+        return task
+
+    def _handle_hash_status(self, parsed):
+        _purge_tasks()  # 长期无新提交时也能回收过期任务占用的内存
+        task = self._get_task(parsed)
+        if not task:
+            return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
+        resp = {"success": True, "status": task["status"],
+                "done": task["done"], "total": task["total"]}
+        if task["status"] in ("done", "cancelled"):
+            resp["path"] = task["path"]
+            resp["results"] = task["results"]
+        elif task["status"] == "error":
+            resp["error"] = task["error"]
+        self._json(resp)
+
+    def _handle_hash_cancel(self, parsed):
+        task = self._get_task(parsed)
+        if not task:
+            return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
+        task["cancelled"] = True
+        proc = task["proc"]
+        if proc is not None:
             try:
-                _save_history(results, self._uid())
+                proc.kill()
             except Exception:
                 pass
-            self._json({"success": True, "path": path, "results": results})
-        except Exception as exc:
-            self._json({"success": False, "error": str(exc)}, 500)
+        self._json({"success": True})
 
     def _json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")

@@ -21,6 +21,7 @@ const historySearchBtn = $('history-search-btn');
 const historyPager   = $('history-pager');
 const verifyGroup    = $('verify-group');
 const loadingEl      = $('loading');
+const loadingText    = $('loading-text');
 const errorBox       = $('error-box');
 const resultsEl      = $('results');
 const resultsBody    = $('results-body');
@@ -35,9 +36,12 @@ const ALGO_ORDER = ['sha256', 'md5', 'sha1', 'sha512'];
 // Accumulated results: Map<filePath, Map<algo, resultEntry>>
 const state = new Map();
 
-// Active fetch controller (for abort)
+// Active fetch controller + server-side task id (for abort)
 let activeController = null;
-let timedOut = false;
+let currentTaskId = null;
+let cancelRequested = false;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Algo chips ──────────────────────────────────────────────
 document.querySelectorAll('.algo-chip input[type="checkbox"]').forEach(cb => {
@@ -64,8 +68,21 @@ expectedInput.addEventListener('input', () => {
 });
 
 // ── Abort ───────────────────────────────────────────────────
+function sendCancel(id) {
+  // 通知服务端取消任务（杀掉哈希子进程），下一次轮询会返回 cancelled
+  fetch('api/hash?id=' + id, { method: 'DELETE' }).catch(() => {});
+}
+
 abortBtn.addEventListener('click', () => {
-  if (activeController) activeController.abort();
+  if (!cancelRequested) {
+    cancelRequested = true;
+    // 任务 id 尚未返回时只挂起取消，run() 拿到 id 后立即补发，
+    // 避免服务端任务成为无人认领、无法取消的孤儿
+    if (currentTaskId) sendCancel(currentTaskId);
+  } else if (activeController) {
+    // 第二次点击：取消未生效（如服务端卡住）时强制断开客户端轮询
+    activeController.abort();
+  }
 });
 
 // ── Submit ──────────────────────────────────────────────────
@@ -73,6 +90,7 @@ submitBtn.addEventListener('click', run);
 pathInput.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
 
 async function run() {
+  if (activeController) return;  // 已有任务进行中（回车键不受 submitBtn.disabled 约束）
   const path = pathInput.value.trim();
   if (!path) { showError('请输入文件或目录路径'); return; }
 
@@ -87,34 +105,62 @@ async function run() {
   const expected = expectedInput.value.trim();
   if (expected) params.set('expected', expected);
 
-  const timeoutSec = parseInt(timeoutSel.value, 10);
-  params.set('timeout', timeoutSel.value);  // 0 = unlimited
+  params.set('timeout', timeoutSel.value);  // 0 = 无限制（单个文件的哈希超时，由服务端执行）
   activeController = new AbortController();
-  timedOut = false;
-  let timer = null;
-  if (timeoutSec > 0) {
-    timer = setTimeout(() => { timedOut = true; activeController.abort(); }, timeoutSec * 1000);
-  }
+  cancelRequested = false;
 
   setLoading(true);
   clearError();
 
   try {
+    // 提交任务后轮询结果：大文件计算耗时可远超网关的 5 分钟代理超时，
+    // 同步等待会被网关 504 掐断，改为短请求轮询
     const res = await fetch('api/hash?' + params, { signal: activeController.signal });
     const data = await res.json();
     if (!data.success) { showError(data.error || '计算失败'); return; }
-    mergeResults(data.results);
-    renderFromState();
+    currentTaskId = data.task;
+    if (cancelRequested) sendCancel(currentTaskId);  // 中止点在任务 id 返回之前：补发取消
+
+    const d = await pollTask(data.task, activeController.signal);
+    if (d.status === 'error') { showError(d.error || '计算失败'); return; }
+    if (d.results && d.results.length) {
+      mergeResults(d.results);
+      renderFromState();
+    }
+    if (d.status === 'cancelled') {
+      showError(d.results && d.results.length ? '已中止计算，已完成部分的结果已保留' : '已中止计算');
+    }
   } catch (e) {
     if (e.name === 'AbortError') {
-      showError(timedOut ? `计算超时（${timeoutSec} 秒），可调大超时时间后重试` : '已中止计算');
+      showError('已中止计算');
     } else {
       showError('网络请求失败：' + e.message);
     }
   } finally {
-    if (timer) clearTimeout(timer);
+    currentTaskId = null;
     activeController = null;
     setLoading(false);
+  }
+}
+
+async function pollTask(id, signal) {
+  let delay = 1000;
+  let failures = 0;
+  while (true) {
+    await sleep(delay);
+    let d;
+    try {
+      const res = await fetch('api/hash/status?id=' + id, { signal });
+      d = await res.json();
+      failures = 0;
+    } catch (e) {
+      if (e.name === 'AbortError' || ++failures >= 3) throw e;
+      continue;  // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃
+    }
+    if (!d.success) return { status: 'error', error: d.error || '查询任务状态失败' };
+    if (d.status !== 'running') return d;
+    if (d.total > 1) loadingText.textContent = `计算中（${d.done}/${d.total}），请稍候…`;
+    delay = Math.min(delay + 500, 3000);  // 缓步退避，长任务减少无谓轮询
   }
 }
 
@@ -382,4 +428,9 @@ function fallbackCopy(text, btn, done) {
 
 function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
 function clearError()   { errorBox.hidden = true; }
-function setLoading(v)  { loadingEl.hidden = !v; submitBtn.disabled = v; abortBtn.hidden = !v; }
+function setLoading(v)  {
+  loadingEl.hidden = !v;
+  submitBtn.disabled = v;
+  abortBtn.hidden = !v;
+  if (v) loadingText.textContent = '计算中，请稍候…';
+}
