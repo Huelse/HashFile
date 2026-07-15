@@ -160,6 +160,11 @@ class HashHandler(SimpleHTTPRequestHandler):
         # 身份只信任统一网关注入的 X-Trim-Userid，绝不使用客户端自带的 ID。
         return (self.headers.get("X-Trim-Userid") or "").strip()
 
+    def end_headers(self):
+        # 静态文件默认无 Cache-Control，浏览器启发式缓存会导致更新包后仍用旧前端
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def _normalize_path(self):
         """剥离网关前缀，使经网关（/app/HashFile/...）与直连端口（/...）路由一致。
         返回 True 表示已发送重定向，调用方应直接返回。"""
@@ -243,7 +248,6 @@ class HashHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 

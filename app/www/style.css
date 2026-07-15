@@ -371,9 +371,12 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  gap: 8px;
 }
 .modal-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;

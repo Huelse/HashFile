@@ -17,6 +17,7 @@ const abortBtn       = $('abort-btn');
 const clearBtn       = $('clear-btn');
 const historyBtn     = $('history-btn');
 const historySearch  = $('history-search');
+const historySearchBtn = $('history-search-btn');
 const historyPager   = $('history-pager');
 const verifyGroup    = $('verify-group');
 const loadingEl      = $('loading');
@@ -135,10 +136,15 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && !historyOv
 
 historySearch.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
+  doHistorySearch();
+});
+historySearchBtn.addEventListener('click', doHistorySearch);
+
+function doHistorySearch() {
   _hQuery = historySearch.value.trim();
   _hPage  = 1;
   loadHistory();
-});
+}
 
 function openHistory() {
   historySearch.value = '';
