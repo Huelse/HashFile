@@ -14,7 +14,8 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-WWW_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www")
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+WWW_DIR  = os.path.join(_SERVER_DIR, "..", "www")
 DATA_DIR = os.environ.get("DATA_DIR") or "/var/apps/HashFile/shares/HashFile"
 DB_PATH  = os.path.join(DATA_DIR, "data.db")
 
@@ -26,11 +27,15 @@ SOCKET_PATH = os.environ.get("GATEWAY_SOCKET") or (
     if os.environ.get("TRIM_APPDEST") else None
 )
 
+# 前四项委托给系统 coreutils 的 *sum 命令（PATH 查找）；
+# blake3 无对应系统命令，故打包静态 b3sum 二进制并以绝对路径引用，
+# 这样 compute_hashes 无需区分命令式/绝对路径，二者对 Popen 等价。
 ALGO_CMDS = {
     "sha256": "sha256sum",
     "md5":    "md5sum",
     "sha1":   "sha1sum",
     "sha512": "sha512sum",
+    "blake3": os.path.join(_SERVER_DIR, "bin", "b3sum"),
 }
 
 _db_lock = threading.Lock()

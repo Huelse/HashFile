@@ -19,7 +19,6 @@ const historyBtn     = $('history-btn');
 const historySearch  = $('history-search');
 const historySearchBtn = $('history-search-btn');
 const historyPager   = $('history-pager');
-const verifyGroup    = $('verify-group');
 const loadingEl      = $('loading');
 const loadingText    = $('loading-text');
 const errorBox       = $('error-box');
@@ -31,7 +30,7 @@ const historyOverlay = $('history-overlay');
 const historyList    = $('history-list');
 const historyClose   = $('history-close');
 
-const ALGO_ORDER = ['sha256', 'md5', 'sha1', 'sha512'];
+const ALGO_ORDER = ['sha256', 'md5', 'sha1', 'sha512', 'blake3'];
 
 // Accumulated results: Map<filePath, Map<algo, resultEntry>>
 const state = new Map();
@@ -54,13 +53,6 @@ function getSelectedAlgos() {
   return [...document.querySelectorAll('.algo-chip input[type="checkbox"]:checked')]
     .map(cb => cb.value);
 }
-
-// ── Recursive → hide verify ─────────────────────────────────
-recursiveChk.addEventListener('change', () => {
-  verifyGroup.hidden = recursiveChk.checked;
-  if (recursiveChk.checked) expectedInput.value = '';
-  if (state.size > 0) renderFromState();
-});
 
 // ── Expected input → live re-verify ─────────────────────────
 expectedInput.addEventListener('input', () => {
@@ -298,7 +290,7 @@ function renderFromState() {
   if (rows.length === 0) { resultsEl.hidden = true; return; }
 
   const expected = expectedInput.value.trim();
-  const verifyMode = expected.length > 0 && !recursiveChk.checked;
+  const verifyMode = expected.length > 0;
 
   thStatus.style.display = verifyMode ? '' : 'none';
   resultsBody.innerHTML = '';

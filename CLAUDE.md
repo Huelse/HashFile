@@ -4,7 +4,7 @@
 
 ## 项目简介
 
-HashFile 是一个 fnOS（基于 Debian 12 的 NAS 操作系统）软件包，用于计算文件或目录的哈希值（SHA-256、SHA-512、SHA-1、MD5）。它将一个 Python Web 服务器、一个纯 JS 前端界面和一个 Bash 命令行工具打包成可在 fnOS 上安装的 `.fpk` 包。
+HashFile 是一个 fnOS（基于 Debian 12 的 NAS 操作系统）软件包，用于计算文件或目录的哈希值（SHA-256、SHA-512、SHA-1、MD5、BLAKE3）。它将一个 Python Web 服务器、一个纯 JS 前端界面和一个 Bash 命令行工具打包成可在 fnOS 上安装的 `.fpk` 包。
 
 ## 本地运行
 
