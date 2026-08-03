@@ -9,13 +9,13 @@ if (_initPath) {
 }
 
 const pathInput      = $('path');
+const pathClear      = $('path-clear');
 const recursiveChk   = $('recursive');
 const expectedInput  = $('expected');
 const timeoutSel     = $('timeout-sel');
 const submitBtn      = $('submit');
 const abortBtn       = $('abort-btn');
 const clearBtn       = $('clear-btn');
-const resetBtn       = $('reset-btn');
 const historyBtn     = $('history-btn');
 const historySearch  = $('history-search');
 const historySearchBtn = $('history-search-btn');
@@ -171,23 +171,12 @@ clearBtn.addEventListener('click', () => {
   clearError();
 });
 
-// ── Reset ───────────────────────────────────────────────────
-// 还原整个表单到初始默认状态（清空结果 + 路径/算法/超时/递归/校验值）
-resetBtn.addEventListener('click', () => {
-  state.clear();
-  resultsEl.hidden = true;
-  clearError();
-  pathInput.value = '';
-  expectedInput.value = '';
-  recursiveChk.checked = false;
-  timeoutSel.value = '60';
-  // 算法：仅 SHA-256 勾选
-  document.querySelectorAll('.algo-chip input[type="checkbox"]').forEach(cb => {
-    const on = cb.value === 'sha256';
-    cb.checked = on;
-    cb.closest('.algo-chip').classList.toggle('selected', on);
-  });
-});
+// ── Path clear ──────────────────────────────────────────────
+// 输入框尾部 ✕：仅在有值时出现，点击清空路径并聚焦
+function syncPathClear() { pathClear.hidden = !pathInput.value; }
+pathInput.addEventListener('input', syncPathClear);
+pathClear.addEventListener('click', () => { pathInput.value = ''; pathInput.focus(); syncPathClear(); });
+syncPathClear();  // 兼容 ?path= 预填：页面加载后已有值时立即显示
 
 // ── History ──────────────────────────────────────────────────
 let _hPage = 1;

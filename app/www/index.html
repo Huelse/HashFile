@@ -16,7 +16,10 @@
     <section class="card form-card">
       <div class="form-group">
         <label for="path">文件 / 目录路径</label>
-        <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
+        <div class="input-wrap">
+          <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
+          <button id="path-clear" class="input-clear" type="button" aria-label="清除" hidden>✕</button>
+        </div>
       </div>
 
       <div class="form-group">
@@ -56,7 +59,6 @@
         <button id="submit" class="btn-primary">计算哈希</button>
         <button id="abort-btn" class="btn-danger" hidden>中止</button>
         <button id="clear-btn" class="btn-ghost">清空结果</button>
-        <button id="reset-btn" class="btn-ghost">还原</button>
         <button id="history-btn" class="btn-ghost">历史记录</button>
       </div>
     </section>
