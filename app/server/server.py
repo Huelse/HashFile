@@ -52,13 +52,14 @@ def _init_db():
                 path       TEXT    NOT NULL,
                 algo       TEXT    NOT NULL,
                 hash       TEXT,
+                elapsed_ms INTEGER,
                 created_at TEXT    NOT NULL
             )
         """)
-        # 兼容旧库：补充 uid 列
-        # cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
-        # if "uid" not in cols:
-        #     conn.execute("ALTER TABLE hash_history ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+        # 兼容旧库：补充 elapsed_ms 列（旧数据为 NULL，前端显示为 —）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
+        if "elapsed_ms" not in cols:
+            conn.execute("ALTER TABLE hash_history ADD COLUMN elapsed_ms INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_uid ON hash_history(uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_path ON hash_history(path)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_hash ON hash_history(hash)")
@@ -71,8 +72,8 @@ def _save_history_one(entry, uid):
     with _db_lock:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "INSERT INTO hash_history (uid, path, algo, hash, created_at) VALUES (?,?,?,?,?)",
-                (uid, entry["file"], entry["algo"], entry.get("hash"), created_at)
+                "INSERT INTO hash_history (uid, path, algo, hash, elapsed_ms, created_at) VALUES (?,?,?,?,?,?)",
+                (uid, entry["file"], entry["algo"], entry.get("hash"), entry.get("elapsed_ms"), created_at)
             )
 
 
@@ -89,7 +90,7 @@ def _list_history(uid, q=None, page=1):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, path, algo, hash, created_at FROM hash_history"
+            "SELECT id, path, algo, hash, elapsed_ms, created_at FROM hash_history"
             f" WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             (*args, PER_PAGE, offset)
         ).fetchall()
@@ -193,11 +194,13 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                 continue
             hash_val = None
             err = None
+            elapsed_ms = None  # 仅实际执行子进程时计时；权限不足等行无耗时
             # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
             # 不再依赖子进程 stderr 文本（受 locale 影响）
             if not os.access(f, os.R_OK):
                 err = "无读取权限，请先至应用设置内添加文件夹读取权限"
             else:
+                _t0 = time.perf_counter()
                 try:
                     # 用 Popen 而非 subprocess.run：把进程句柄挂到任务上，
                     # 取消时可直接 kill 正在计算的子进程
@@ -234,8 +237,13 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                     err = f"{cmd} timed out after {sub_timeout}s"
                 except FileNotFoundError:
                     err = f"command not found: {cmd}"
+                # 实际执行过子进程即记录耗时（成功/超时/非零退出）；命令不存在跳过
+                if "command not found" not in (err or ""):
+                    elapsed_ms = int((time.perf_counter() - _t0) * 1000)
 
             entry = {"file": f, "algo": a, "hash": hash_val}
+            if elapsed_ms is not None:
+                entry["elapsed_ms"] = elapsed_ms
             if err:
                 entry["error"] = err
             if expected:

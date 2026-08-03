@@ -258,6 +258,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   font-weight: 500;
 }
 .col-algo { color: var(--muted); white-space: nowrap; }
+.col-time { color: var(--muted); white-space: nowrap; }
 .col-hash code {
   font-family: var(--mono);
   font-size: .75rem;
