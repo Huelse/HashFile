@@ -228,7 +228,7 @@ function renderHistoryList(entries, total) {
   table.className = 'hist-table';
   table.innerHTML = `
     <thead><tr>
-      <th>文件</th><th>算法</th><th>耗时</th><th>哈希值</th><th>时间</th><th>操作</th>
+      <th>文件</th><th>算法</th><th>哈希值</th><th>耗时</th><th>时间</th><th>操作</th>
     </tr></thead>
     <tbody></tbody>
   `;
@@ -241,8 +241,8 @@ function renderHistoryList(entries, total) {
     tr.innerHTML = `
       <td class="ht-path ht-copy" title="${esc(entry.path)}">${esc(baseName)}</td>
       <td class="ht-algo">${fmtAlgo(entry.algo)}</td>
-      <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(hashShort)}</code></td>
+      <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-time">${esc(entry.created_at)}</td>
       <td class="ht-action"><button class="btn-copy hist-del">删除</button></td>
     `;
@@ -340,8 +340,9 @@ function renderFromState() {
     tr.innerHTML = `
       <td class="col-file" title="${esc(r.file)}">${esc(baseName)}</td>
       <td class="col-algo">${fmtAlgo(r.algo)}</td>
+      ${hashCell}
       <td class="col-time">${fmtDuration(r.elapsed_ms)}</td>
-      ${hashCell}${statusCell}${copyCell}
+      ${statusCell}${copyCell}
     `;
     resultsBody.appendChild(tr);
   }
