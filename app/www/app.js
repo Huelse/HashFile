@@ -18,6 +18,7 @@ const clearBtn       = $('clear-btn');
 const historyBtn     = $('history-btn');
 const historySearch  = $('history-search');
 const historySearchBtn = $('history-search-btn');
+const historyDupBtn  = $('history-dup-btn');
 const historyPager   = $('history-pager');
 const loadingEl      = $('loading');
 const loadingText    = $('loading-text');
@@ -172,6 +173,7 @@ clearBtn.addEventListener('click', () => {
 // ── History ──────────────────────────────────────────────────
 let _hPage = 1;
 let _hQuery = '';
+let _hDup = false;
 
 historyBtn.addEventListener('click', openHistory);
 historyClose.addEventListener('click', closeHistory);
@@ -184,6 +186,15 @@ historySearch.addEventListener('keydown', e => {
 });
 historySearchBtn.addEventListener('click', doHistorySearch);
 
+// 相同文件：切换按哈希值分组视图，仅展示出现 >1 次的哈希组
+historyDupBtn.addEventListener('click', () => {
+  _hDup = !_hDup;
+  historyDupBtn.classList.toggle('btn-primary', _hDup);
+  historyDupBtn.classList.toggle('btn-ghost', !_hDup);
+  _hPage = 1;
+  loadHistory();
+});
+
 function doHistorySearch() {
   _hQuery = historySearch.value.trim();
   _hPage  = 1;
@@ -194,6 +205,9 @@ function openHistory() {
   historySearch.value = '';
   _hQuery = '';
   _hPage  = 1;
+  _hDup   = false;
+  historyDupBtn.classList.remove('btn-primary');
+  historyDupBtn.classList.add('btn-ghost');
   historyOverlay.hidden = false;
   loadHistory();
 }
@@ -207,11 +221,13 @@ async function loadHistory() {
   historyPager.innerHTML = '';
   const params = new URLSearchParams({ page: _hPage });
   if (_hQuery) params.set('q', _hQuery);
+  if (_hDup) params.set('dup', '1');
   try {
     const res  = await fetch('api/history?' + params);
     const data = await res.json();
     if (!data.success) { historyList.innerHTML = `<p class="hist-empty">${esc(data.error)}</p>`; return; }
-    renderHistoryList(data.entries, data.total);
+    if (_hDup) renderDupGroups(data.entries, data.total);
+    else renderHistoryList(data.entries, data.total);
     renderPager(data.page, data.pages);
   } catch {
     historyList.innerHTML = '<p class="hist-empty">加载失败</p>';
@@ -258,6 +274,51 @@ function renderHistoryList(entries, total) {
 
   historyList.innerHTML = '';
   historyList.appendChild(table);
+}
+
+// 相同文件分组视图：后端按 hash 排序返回，连续相同 hash 聚为一组
+function renderDupGroups(entries, total) {
+  if (entries.length === 0) {
+    historyList.innerHTML = '<p class="hist-empty">没有相同哈希值的文件</p>';
+    return;
+  }
+  // 按 hash 聚合（顺序即组顺序）
+  const groups = [];
+  let cur = null;
+  for (const e of entries) {
+    if (!cur || cur.hash !== e.hash) {
+      cur = { hash: e.hash, files: [] };
+      groups.push(cur);
+    }
+    cur.files.push(e);
+  }
+
+  historyList.innerHTML = '';
+  for (const g of groups) {
+    const block = document.createElement('div');
+    block.className = 'dup-group';
+    const head = document.createElement('div');
+    head.className = 'dup-head ht-copy';
+    head.title = g.hash;
+    head.innerHTML = `<code>${esc(g.hash.slice(0, 16))}…</code> <span class="dup-count">${g.files.length} 个文件</span>`;
+    bindCopyCell(head, g.hash, g.hash.slice(0, 16) + '…');
+    block.appendChild(head);
+
+    const list = document.createElement('ul');
+    list.className = 'dup-list';
+    for (const e of g.files) {
+      const baseName = e.path.split('/').pop() || e.path;
+      const li = document.createElement('li');
+      li.innerHTML = `
+        <span class="dup-path ht-copy" title="${esc(e.path)}">${esc(baseName)}</span>
+        <span class="dup-algo">${fmtAlgo(e.algo)}</span>
+        <span class="dup-time">${esc(e.created_at)}</span>`;
+      bindCopyCell(li.querySelector('.dup-path'), e.path, baseName);
+      list.appendChild(li);
+    }
+    block.appendChild(list);
+    historyList.appendChild(block);
+  }
 }
 
 function renderPager(page, pages) {

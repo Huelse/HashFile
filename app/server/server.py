@@ -79,19 +79,24 @@ def _save_history_one(entry, uid):
 
 PER_PAGE = 20
 
-def _list_history(uid, q=None, page=1):
+def _list_history(uid, q=None, page=1, dup=False):
     offset = (page - 1) * PER_PAGE
     where = "uid = ?"
     args = [uid]
+    if dup:
+        # 仅保留出现次数 > 1 的 hash（相同文件），hash 为 NULL 的错误行排除
+        where += " AND hash IS NOT NULL AND hash IN (SELECT hash FROM hash_history WHERE uid = ? AND hash IS NOT NULL GROUP BY hash HAVING COUNT(*) > 1)"
+        args.append(uid)
     if q:
         pattern = f"%{q}%"
         where += " AND (path LIKE ? OR hash LIKE ?)"
         args += [pattern, pattern]
+    order = "hash, id DESC" if dup else "id DESC"
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, path, algo, hash, elapsed_ms, created_at FROM hash_history"
-            f" WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            f" WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             (*args, PER_PAGE, offset)
         ).fetchall()
         total = conn.execute(
@@ -420,8 +425,9 @@ class HashHandler(SimpleHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         q    = qs.get("q",    [""])[0].strip() or None
         page = max(1, int(qs.get("page", ["1"])[0]))
+        dup  = qs.get("dup",  [""])[0].lower() in ("1", "true")
         try:
-            entries, total = _list_history(self._uid(), q, page)
+            entries, total = _list_history(self._uid(), q, page, dup)
             pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
             self._json({"success": True, "entries": entries,
                         "total": total, "page": page, "pages": pages})
