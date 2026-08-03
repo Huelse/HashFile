@@ -113,8 +113,12 @@ async function run() {
     currentTaskId = data.task;
     if (cancelRequested) sendCancel(currentTaskId);  // 中止点在任务 id 返回之前：补发取消
 
-    const d = await pollTask(data.task, activeController.signal);
+    const d = await pollTask(data.task, activeController.signal, partial => {
+      mergeResults(partial);
+      renderFromState();
+    });
     if (d.status === 'error') { showError(d.error || '计算失败'); return; }
+    // 终态结果兜底合并：取消等情况下最后一次轮询可能未触发 onProgress
     if (d.results && d.results.length) {
       mergeResults(d.results);
       renderFromState();
@@ -135,7 +139,7 @@ async function run() {
   }
 }
 
-async function pollTask(id, signal) {
+async function pollTask(id, signal, onProgress) {
   let delay = 1000;
   let failures = 0;
   while (true) {
@@ -150,8 +154,10 @@ async function pollTask(id, signal) {
       continue;  // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃
     }
     if (!d.success) return { status: 'error', error: d.error || '查询任务状态失败' };
-    if (d.status !== 'running') return d;
+    // 运行中即时合并已完成的结果并渲染，让用户不必等全部算完才看到
+    if (d.results && d.results.length && onProgress) onProgress(d.results);
     if (d.total > 1) loadingText.textContent = `计算中（${d.done}/${d.total}），请稍候…`;
+    if (d.status !== 'running') return d;
     delay = Math.min(delay + 500, 3000);  // 缓步退避，长任务减少无谓轮询
   }
 }

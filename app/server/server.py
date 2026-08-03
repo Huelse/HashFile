@@ -182,6 +182,7 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                             "error": "无读取权限，请先至应用设置内添加文件夹读取权限"})
         if task is not None:
             task["done"] = len(results)
+            task["results"] = results  # 预填的 error 行也即时可见
 
     for f in files:
         for a in algos:
@@ -243,6 +244,8 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
             results.append(entry)
             if task is not None:
                 task["done"] = len(results)
+                # 每完成一项即发布，运行中的轮询可拿到已完成部分供前端实时渲染
+                task["results"] = results
 
     return results
 
@@ -371,9 +374,13 @@ class HashHandler(SimpleHTTPRequestHandler):
             return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
         resp = {"success": True, "status": task["status"],
                 "done": task["done"], "total": task["total"]}
+        # 运行中也返回已完成的 results，供前端实时渲染。
+        # 拷贝快照：后台线程可能正在 append，避免序列化期间并发修改。
+        results = task["results"]
+        if results is not None:
+            resp["results"] = list(results)
         if task["status"] in ("done", "cancelled"):
             resp["path"] = task["path"]
-            resp["results"] = task["results"]
         elif task["status"] == "error":
             resp["error"] = task["error"]
         self._json(resp)
