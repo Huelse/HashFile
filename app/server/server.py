@@ -64,13 +64,15 @@ def _init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_hash ON hash_history(hash)")
 
 
-def _save_history(results, uid):
+def _save_history_one(entry, uid):
+    """逐条写入历史：流式计算中每完成一项即落库，避免任务被取消或网关中断时
+    已算出的结果丢失。hash_history 表 algo 为自由 TEXT，成功与错误（hash=None）均写入。"""
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _db_lock:
         with sqlite3.connect(DB_PATH) as conn:
-            conn.executemany(
+            conn.execute(
                 "INSERT INTO hash_history (uid, path, algo, hash, created_at) VALUES (?,?,?,?,?)",
-                [(uid, r["file"], r["algo"], r.get("hash"), created_at) for r in results]
+                (uid, entry["file"], entry["algo"], entry.get("hash"), created_at)
             )
 
 
@@ -124,11 +126,7 @@ def _purge_tasks():
 def _run_hash_task(task, path, algos, recursive, expected, sub_timeout):
     try:
         results = compute_hashes(path, algos, recursive, expected, sub_timeout, task)
-        try:
-            if results:
-                _save_history(results, task["uid"])
-        except Exception:
-            pass
+        # 历史记录已在 compute_hashes 中逐条即时落库，此处无需再批量写入
         task["results"] = results
         task["status"] = "cancelled" if task["cancelled"] else "done"
     except Exception as exc:
@@ -183,6 +181,8 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
         if task is not None:
             task["done"] = len(results)
             task["results"] = results  # 预填的 error 行也即时可见
+            for r in results:
+                _save_history_one(r, task["uid"])
 
     for f in files:
         for a in algos:
@@ -246,6 +246,8 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                 task["done"] = len(results)
                 # 每完成一项即发布，运行中的轮询可拿到已完成部分供前端实时渲染
                 task["results"] = results
+                # 即时落库：即便后续任务被取消或网关中断，已算出的结果也已持久化
+                _save_history_one(entry, task["uid"])
 
     return results
 
