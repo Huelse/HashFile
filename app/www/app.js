@@ -15,6 +15,7 @@ const timeoutSel     = $('timeout-sel');
 const submitBtn      = $('submit');
 const abortBtn       = $('abort-btn');
 const clearBtn       = $('clear-btn');
+const resetBtn       = $('reset-btn');
 const historyBtn     = $('history-btn');
 const historySearch  = $('history-search');
 const historySearchBtn = $('history-search-btn');
@@ -168,6 +169,24 @@ clearBtn.addEventListener('click', () => {
   state.clear();
   resultsEl.hidden = true;
   clearError();
+});
+
+// ── Reset ───────────────────────────────────────────────────
+// 还原整个表单到初始默认状态（清空结果 + 路径/算法/超时/递归/校验值）
+resetBtn.addEventListener('click', () => {
+  state.clear();
+  resultsEl.hidden = true;
+  clearError();
+  pathInput.value = '';
+  expectedInput.value = '';
+  recursiveChk.checked = false;
+  timeoutSel.value = '60';
+  // 算法：仅 SHA-256 勾选
+  document.querySelectorAll('.algo-chip input[type="checkbox"]').forEach(cb => {
+    const on = cb.value === 'sha256';
+    cb.checked = on;
+    cb.closest('.algo-chip').classList.toggle('selected', on);
+  });
 });
 
 // ── History ──────────────────────────────────────────────────
