@@ -18,7 +18,7 @@
         <label for="path">文件 / 目录路径</label>
         <div class="input-wrap">
           <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
-          <button id="path-clear" class="input-clear" type="button" aria-label="清除" hidden>✕</button>
+          <button id="path-clear" class="input-clear" type="button" aria-label="清除">✕</button>
         </div>
       </div>
 
@@ -52,7 +52,10 @@
 
       <div class="form-group" id="verify-group">
         <label for="expected">校验值（可选）— 填入后自动比对结果</label>
-        <input type="text" id="expected" placeholder="粘贴期望的哈希值..." autocomplete="off" spellcheck="false">
+        <div class="input-wrap">
+          <input type="text" id="expected" placeholder="粘贴期望的哈希值..." autocomplete="off" spellcheck="false">
+          <button id="expected-clear" class="input-clear" type="button" aria-label="清除">✕</button>
+        </div>
       </div>
 
       <div class="form-actions">
@@ -101,7 +104,10 @@
         <button id="history-close" class="btn-icon" aria-label="关闭">✕</button>
       </div>
       <div class="modal-search">
-        <input type="text" id="history-search" placeholder="搜索路径或哈希值…" autocomplete="off" spellcheck="false">
+        <div class="input-wrap search-wrap">
+          <input type="text" id="history-search" placeholder="搜索路径或哈希值…" autocomplete="off" spellcheck="false">
+          <button id="history-search-clear" class="input-clear" type="button" aria-label="清除">✕</button>
+        </div>
         <button id="history-search-btn" class="btn-primary">搜索</button>
         <button id="history-dup-btn" class="btn-ghost">相同文件</button>
       </div>

@@ -9,7 +9,6 @@ if (_initPath) {
 }
 
 const pathInput      = $('path');
-const pathClear      = $('path-clear');
 const recursiveChk   = $('recursive');
 const expectedInput  = $('expected');
 const timeoutSel     = $('timeout-sel');
@@ -171,12 +170,19 @@ clearBtn.addEventListener('click', () => {
   clearError();
 });
 
-// ── Path clear ──────────────────────────────────────────────
-// 输入框尾部 ✕：仅在有值时出现，点击清空路径并聚焦
-function syncPathClear() { pathClear.hidden = !pathInput.value; }
-pathInput.addEventListener('input', syncPathClear);
-pathClear.addEventListener('click', () => { pathInput.value = ''; pathInput.focus(); syncPathClear(); });
-syncPathClear();  // 兼容 ?path= 预填：页面加载后已有值时立即显示
+// ── Input clear (✕) ─────────────────────────────────────────
+// 通用：给输入框绑定尾部清除按钮，空值时隐藏；onClear 用于清空后回调
+function setupInputClear(input, onClear) {
+  const wrap = input.closest('.input-wrap');
+  const btn = wrap.querySelector('.input-clear');
+  const sync = () => wrap.classList.toggle('is-empty', !input.value);
+  input.addEventListener('input', sync);
+  btn.addEventListener('click', () => { input.value = ''; input.focus(); sync(); onClear && onClear(); });
+  sync();
+}
+setupInputClear(pathInput);                                  // 路径
+setupInputClear(expectedInput, () => { if (state.size > 0) renderFromState(); });  // 校验值：清空后重新渲染
+setupInputClear(historySearch, () => doHistorySearch());     // 历史搜索：清空即重新搜索
 
 // ── History ──────────────────────────────────────────────────
 let _hPage = 1;
