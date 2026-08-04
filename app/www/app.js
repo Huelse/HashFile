@@ -266,18 +266,18 @@ function renderHistoryList(entries, total) {
 
   for (const entry of entries) {
     const tr = document.createElement('tr');
-    const baseName = entry.path.split('/').pop() || entry.path;
-    const hashShort = entry.hash ? entry.hash.slice(0, 16) + '…' : '—';
+    const name = baseName(entry.path);
+    const hshort = hashShort(entry.hash);
     tr.innerHTML = `
-      <td class="ht-path ht-copy" title="${esc(entry.path)}">${esc(baseName)}</td>
+      <td class="ht-path ht-copy" title="${esc(entry.path)}">${esc(name)}</td>
       <td class="ht-algo">${fmtAlgo(entry.algo)}</td>
-      <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(hashShort)}</code></td>
+      <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(hshort)}</code></td>
       <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-time">${esc(entry.created_at)}</td>
       <td class="ht-action"><button class="btn-copy hist-del">删除</button></td>
     `;
-    bindCopyCell(tr.querySelector('.ht-path'), entry.path, baseName);
-    if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash, hashShort);
+    bindCopyCell(tr.querySelector('.ht-path'), entry.path, name);
+    if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash, hshort);
     tr.querySelector('.hist-del').addEventListener('click', async () => {
       try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
@@ -311,23 +311,24 @@ function renderDupGroups(entries, total) {
   for (const g of groups) {
     const block = document.createElement('div');
     block.className = 'dup-group';
+    const hshort = g.hash.slice(0, 16) + '…';
     const head = document.createElement('div');
     head.className = 'dup-head ht-copy';
     head.title = g.hash;
-    head.innerHTML = `<code>${esc(g.hash.slice(0, 16))}…</code> <span class="dup-count">${g.files.length} 个文件</span>`;
-    bindCopyCell(head, g.hash, g.hash.slice(0, 16) + '…');
+    head.innerHTML = `<code>${esc(hshort)}</code> <span class="dup-count">${g.files.length} 个文件</span>`;
+    bindCopyCell(head, g.hash, hshort);
     block.appendChild(head);
 
     const list = document.createElement('ul');
     list.className = 'dup-list';
     for (const e of g.files) {
-      const baseName = e.path.split('/').pop() || e.path;
+      const name = baseName(e.path);
       const li = document.createElement('li');
       li.innerHTML = `
-        <span class="dup-path ht-copy" title="${esc(e.path)}">${esc(baseName)}</span>
+        <span class="dup-path ht-copy" title="${esc(e.path)}">${esc(name)}</span>
         <span class="dup-algo">${fmtAlgo(e.algo)}</span>
         <span class="dup-time">${esc(e.created_at)}</span>`;
-      bindCopyCell(li.querySelector('.dup-path'), e.path, baseName);
+      bindCopyCell(li.querySelector('.dup-path'), e.path, name);
       list.appendChild(li);
     }
     block.appendChild(list);
@@ -391,7 +392,7 @@ function renderFromState() {
       matched ? ok++ : fail++;
     }
 
-    const baseName = r.file.split('/').pop() || r.file;
+    const name = baseName(r.file);
 
     const hashCell = hasError
       ? `<td class="col-hash hash-error" title="${esc(r.error)}"><span class="err-icon">⚠</span> ${esc(r.error)}</td>`
@@ -413,7 +414,7 @@ function renderFromState() {
       : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
 
     tr.innerHTML = `
-      <td class="col-file" title="${esc(r.file)}">${esc(baseName)}</td>
+      <td class="col-file" title="${esc(r.file)}">${esc(name)}</td>
       <td class="col-algo">${fmtAlgo(r.algo)}</td>
       ${hashCell}
       <td class="col-time">${fmtDuration(r.elapsed_ms)}</td>
@@ -473,6 +474,10 @@ function showModalToast() {
 function fmtAlgo(a) {
   return a === 'md5' ? 'MD5' : a.replace(/^sha(\d+)$/, 'SHA-$1').toUpperCase();
 }
+
+// 取路径的末段作为文件名；哈希截短显示
+const baseName = p => p.split('/').pop() || p;
+const hashShort = h => h ? h.slice(0, 16) + '…' : '—';
 
 // 毫秒 → 人类可读：分钟为最大单位。<1s 保留两位小数，<60s 一位，否则分钟
 function fmtDuration(ms) {
