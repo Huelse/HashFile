@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import socketserver
+import concurrent.futures
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -37,6 +38,10 @@ ALGO_CMDS = {
     "sha512": "sha512sum",
     "blake3": os.path.join(_SERVER_DIR, "bin", "b3sum"),
 }
+
+# 单任务内的并行度：留 1 核给系统/Web 服务。*sum 为外部子进程，
+# 线程池只是阻塞等待其 I/O，GIL 不影响子进程本身的 CPU 并行。
+_MAX_WORKERS = max(1, (os.cpu_count() or 2) - 1)
 
 _db_lock = threading.Lock()
 
@@ -139,7 +144,7 @@ def _run_hash_task(task, path, algos, recursive, expected, sub_timeout):
         task["error"] = str(exc)
         task["status"] = "error"
     finally:
-        task["proc"] = None
+        task["procs"] = None
         task["finished_at"] = time.time()
 
 
@@ -190,70 +195,21 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
             for r in results:
                 _save_history_one(r, task["uid"])
 
-    for f in files:
-        for a in algos:
+    # 并行计算：把 (file, algo) 展平为工作单元，用线程池并发执行 *sum 子进程。
+    # append/done/发布/落库全在主线程的 as_completed 循环里，worker 只返回 entry，
+    # 天然无竞态。*sum 为外部子进程，线程只是阻塞等待其 I/O，GIL 不影响并行。
+    jobs = [(f, a) for f in files for a in algos if ALGO_CMDS.get(a)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        future_map = {pool.submit(_hash_one, f, a, expected, sub_timeout, task): (f, a)
+                      for f, a in jobs}
+        for fut in concurrent.futures.as_completed(future_map):
             if task is not None and task["cancelled"]:
-                return results
-            cmd = ALGO_CMDS.get(a)
-            if not cmd:
+                for x in future_map:  # 取消尚未开始的 future，已完成的仍收集
+                    x.cancel()
+                break
+            entry = fut.result()
+            if entry is None:  # worker 检测到 cancelled，跳过
                 continue
-            hash_val = None
-            err = None
-            elapsed_ms = None  # 仅实际执行子进程时计时；权限不足等行无耗时
-            # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
-            # 不再依赖子进程 stderr 文本（受 locale 影响）
-            if not os.access(f, os.R_OK):
-                err = "无读取权限，请先至应用设置内添加文件夹读取权限"
-            else:
-                _t0 = time.perf_counter()
-                try:
-                    # 用 Popen 而非 subprocess.run：把进程句柄挂到任务上，
-                    # 取消时可直接 kill 正在计算的子进程
-                    proc = subprocess.Popen(
-                        [cmd, "--", f],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                    )
-                    if task is not None:
-                        task["proc"] = proc
-                        # 发布句柄后重查取消标志，堵住取消落在 Popen 与句柄
-                        # 发布之间的窗口：取消方看到句柄则由它 kill，否则这里自行 kill
-                        if task["cancelled"]:
-                            proc.kill()
-                    try:
-                        out, errout = proc.communicate(timeout=sub_timeout)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.communicate()
-                        raise
-                    finally:
-                        if task is not None:
-                            task["proc"] = None
-                    if task is not None and task["cancelled"]:
-                        return results
-                    if proc.returncode == 0:
-                        parts = out.split()
-                        if parts:
-                            hash_val = parts[0]
-                        else:
-                            err = f"{cmd} produced no output"
-                    else:
-                        err = errout.strip() or "hash command failed"
-                except subprocess.TimeoutExpired:
-                    err = f"{cmd} timed out after {sub_timeout}s"
-                except FileNotFoundError:
-                    err = f"command not found: {cmd}"
-                # 实际执行过子进程即记录耗时（成功/超时/非零退出）；命令不存在跳过
-                if "command not found" not in (err or ""):
-                    elapsed_ms = int((time.perf_counter() - _t0) * 1000)
-
-            entry = {"file": f, "algo": a, "hash": hash_val}
-            if elapsed_ms is not None:
-                entry["elapsed_ms"] = elapsed_ms
-            if err:
-                entry["error"] = err
-            if expected:
-                entry["verified"] = (hash_val == expected)
-                entry["expected"] = expected
             results.append(entry)
             if task is not None:
                 task["done"] = len(results)
@@ -263,6 +219,74 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                 _save_history_one(entry, task["uid"])
 
     return results
+
+
+def _hash_one(f, a, expected, sub_timeout, task):
+    """计算单个 (file, algo) 的哈希，供线程池并行调用。
+    返回 entry dict；若任务已取消则返回 None。"""
+    if task is not None and task["cancelled"]:
+        return None
+    cmd = ALGO_CMDS.get(a)
+    hash_val = None
+    err = None
+    elapsed_ms = None  # 仅实际执行子进程时计时；权限不足等行无耗时
+    # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
+    # 不再依赖子进程 stderr 文本（受 locale 影响）
+    if not os.access(f, os.R_OK):
+        err = "无读取权限，请先至应用设置内添加文件夹读取权限"
+    else:
+        _t0 = time.perf_counter()
+        try:
+            # 用 Popen 而非 subprocess.run：把进程句柄注册到任务的进程集合，
+            # 取消时可 kill 全部正在计算的子进程
+            proc = subprocess.Popen(
+                [cmd, "--", f],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            if task is not None:
+                with task["procs_lock"]:
+                    # 发布句柄后重查取消标志，堵住取消落在 Popen 与注册之间
+                    # 的窗口：取消方看到句柄则由它 kill，否则这里自行 kill
+                    if task["cancelled"]:
+                        proc.kill()
+                    task["procs"].add(proc)
+            try:
+                out, errout = proc.communicate(timeout=sub_timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            finally:
+                if task is not None:
+                    with task["procs_lock"]:
+                        task["procs"].discard(proc)
+            if task is not None and task["cancelled"]:
+                return None
+            if proc.returncode == 0:
+                parts = out.split()
+                if parts:
+                    hash_val = parts[0]
+                else:
+                    err = f"{cmd} produced no output"
+            else:
+                err = errout.strip() or "hash command failed"
+        except subprocess.TimeoutExpired:
+            err = f"{cmd} timed out after {sub_timeout}s"
+        except FileNotFoundError:
+            err = f"command not found: {cmd}"
+        # 实际执行过子进程即记录耗时（成功/超时/非零退出）；命令不存在跳过
+        if "command not found" not in (err or ""):
+            elapsed_ms = int((time.perf_counter() - _t0) * 1000)
+
+    entry = {"file": f, "algo": a, "hash": hash_val}
+    if elapsed_ms is not None:
+        entry["elapsed_ms"] = elapsed_ms
+    if err:
+        entry["error"] = err
+    if expected:
+        entry["verified"] = (hash_val == expected)
+        entry["expected"] = expected
+    return entry
 
 
 class HashHandler(SimpleHTTPRequestHandler):
@@ -356,7 +380,8 @@ class HashHandler(SimpleHTTPRequestHandler):
             "path": path,
             "status": "running",
             "cancelled": False,
-            "proc": None,
+            "procs": set(),          # 正在运行的 *sum 子进程集合，取消时 kill 全部
+            "procs_lock": threading.Lock(),
             "results": None,
             "error": None,
             "done": 0,
@@ -405,12 +430,14 @@ class HashHandler(SimpleHTTPRequestHandler):
         if not task:
             return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
         task["cancelled"] = True
-        proc = task["proc"]
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        procs = task["procs"]
+        if procs:
+            with task["procs_lock"]:
+                for proc in list(procs):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         self._json({"success": True})
 
     def _json(self, data, status=200):
