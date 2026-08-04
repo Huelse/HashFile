@@ -1,6 +1,6 @@
 # HashFile 文件哈希计算
 
-在 fnOS 中计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5 哈希值，支持批量处理与校验比对
+在 fnOS 中计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5/BLAKE3 哈希值，支持批量处理与校验比对
 
 ## 预览
 <img width="1701" height="1114" alt="image" src="https://github.com/user-attachments/assets/8250916e-b028-43e8-ba19-3f8dfe56ad6a" />

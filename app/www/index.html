@@ -10,13 +10,16 @@
   <div class="container">
     <header>
       <h1>文件哈希计算</h1>
-      <p class="subtitle">支持 SHA-256 / SHA-512 / SHA-1 / MD5，可批量处理目录</p>
+      <p class="subtitle">支持 SHA-256 / SHA-512 / SHA-1 / MD5 / BLAKE3，可批量处理目录</p>
     </header>
 
     <section class="card form-card">
       <div class="form-group">
         <label for="path">文件 / 目录路径</label>
-        <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
+        <div class="input-wrap">
+          <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
+          <button id="path-clear" class="input-clear" type="button" aria-label="清除">✕</button>
+        </div>
       </div>
 
       <div class="form-group">
@@ -26,6 +29,7 @@
           <label class="algo-chip"><input type="checkbox" value="md5"><span>MD5</span></label>
           <label class="algo-chip"><input type="checkbox" value="sha1"><span>SHA-1</span></label>
           <label class="algo-chip"><input type="checkbox" value="sha512"><span>SHA-512</span></label>
+          <label class="algo-chip"><input type="checkbox" value="blake3"><span>BLAKE3</span></label>
         </div>
       </div>
 
@@ -48,7 +52,10 @@
 
       <div class="form-group" id="verify-group">
         <label for="expected">校验值（可选）— 填入后自动比对结果</label>
-        <input type="text" id="expected" placeholder="粘贴期望的哈希值..." autocomplete="off" spellcheck="false">
+        <div class="input-wrap">
+          <input type="text" id="expected" placeholder="粘贴期望的哈希值..." autocomplete="off" spellcheck="false">
+          <button id="expected-clear" class="input-clear" type="button" aria-label="清除">✕</button>
+        </div>
       </div>
 
       <div class="form-actions">
@@ -77,6 +84,7 @@
               <th class="col-file">文件</th>
               <th class="col-algo">算法</th>
               <th class="col-hash">哈希值</th>
+              <th class="col-time">耗时</th>
               <th class="col-status" id="th-status">状态</th>
               <th class="col-action">操作</th>
             </tr>
@@ -96,8 +104,12 @@
         <button id="history-close" class="btn-icon" aria-label="关闭">✕</button>
       </div>
       <div class="modal-search">
-        <input type="text" id="history-search" placeholder="搜索路径或哈希值…" autocomplete="off" spellcheck="false">
+        <div class="input-wrap search-wrap">
+          <input type="text" id="history-search" placeholder="搜索路径或哈希值…" autocomplete="off" spellcheck="false">
+          <button id="history-search-clear" class="input-clear" type="button" aria-label="清除">✕</button>
+        </div>
         <button id="history-search-btn" class="btn-primary">搜索</button>
+        <button id="history-dup-btn" class="btn-ghost">相同文件</button>
       </div>
       <div class="modal-body" id="history-list"></div>
       <div class="modal-footer" id="history-pager"></div>

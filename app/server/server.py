@@ -10,11 +10,14 @@ import sqlite3
 import subprocess
 import threading
 import socketserver
+import concurrent.futures
+from contextlib import closing
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-WWW_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www")
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+WWW_DIR  = os.path.join(_SERVER_DIR, "..", "www")
 DATA_DIR = os.environ.get("DATA_DIR") or "/var/apps/HashFile/shares/HashFile"
 DB_PATH  = os.path.join(DATA_DIR, "data.db")
 
@@ -26,19 +29,29 @@ SOCKET_PATH = os.environ.get("GATEWAY_SOCKET") or (
     if os.environ.get("TRIM_APPDEST") else None
 )
 
+# 前四项委托给系统 coreutils 的 *sum 命令（PATH 查找）；
+# blake3 无对应系统命令，故打包静态 b3sum 二进制并以绝对路径引用，
+# 这样 compute_hashes 无需区分命令式/绝对路径，二者对 Popen 等价。
 ALGO_CMDS = {
     "sha256": "sha256sum",
     "md5":    "md5sum",
     "sha1":   "sha1sum",
     "sha512": "sha512sum",
+    "blake3": os.path.join(_SERVER_DIR, "bin", "b3sum"),
 }
+
+# 单任务内的并行度：留 1 核给系统/Web 服务。*sum 为外部子进程，
+# 线程池只是阻塞等待其 I/O，GIL 不影响子进程本身的 CPU 并行。
+_MAX_WORKERS = max(1, (os.cpu_count() or 2) - 1)
 
 _db_lock = threading.Lock()
 
 
 def _init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    # sqlite3 连接自身的上下文管理器只提交/回滚事务，不会关闭连接，
+    # 因此一律用 closing() 包一层，避免每次请求泄漏一个连接。
+    with closing(sqlite3.connect(DB_PATH)) as conn, conn:
         conn.execute("PRAGMA encoding = 'UTF-8'")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS hash_history (
@@ -47,43 +60,51 @@ def _init_db():
                 path       TEXT    NOT NULL,
                 algo       TEXT    NOT NULL,
                 hash       TEXT,
+                elapsed_ms INTEGER,
                 created_at TEXT    NOT NULL
             )
         """)
-        # 兼容旧库：补充 uid 列
-        # cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
-        # if "uid" not in cols:
-        #     conn.execute("ALTER TABLE hash_history ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+        # 兼容旧库：补充 elapsed_ms 列（旧数据为 NULL，前端显示为 —）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(hash_history)")]
+        if "elapsed_ms" not in cols:
+            conn.execute("ALTER TABLE hash_history ADD COLUMN elapsed_ms INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_uid ON hash_history(uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_path ON hash_history(path)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hh_hash ON hash_history(hash)")
 
 
-def _save_history(results, uid):
+def _save_history_one(entry, uid):
+    """逐条写入历史：流式计算中每完成一项即落库，避免任务被取消或网关中断时
+    已算出的结果丢失。hash_history 表 algo 为自由 TEXT，成功与错误（hash=None）均写入。"""
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _db_lock:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.executemany(
-                "INSERT INTO hash_history (uid, path, algo, hash, created_at) VALUES (?,?,?,?,?)",
-                [(uid, r["file"], r["algo"], r.get("hash"), created_at) for r in results]
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+            conn.execute(
+                "INSERT INTO hash_history (uid, path, algo, hash, elapsed_ms, created_at) VALUES (?,?,?,?,?,?)",
+                (uid, entry["file"], entry["algo"], entry.get("hash"), entry.get("elapsed_ms"), created_at)
             )
 
 
 PER_PAGE = 20
 
-def _list_history(uid, q=None, page=1):
+def _list_history(uid, q=None, page=1, dup=False):
     offset = (page - 1) * PER_PAGE
     where = "uid = ?"
     args = [uid]
+    if dup:
+        # 仅保留出现次数 > 1 的 hash（相同文件），hash 为 NULL 的错误行排除
+        where += " AND hash IS NOT NULL AND hash IN (SELECT hash FROM hash_history WHERE uid = ? AND hash IS NOT NULL GROUP BY hash HAVING COUNT(*) > 1)"
+        args.append(uid)
     if q:
         pattern = f"%{q}%"
         where += " AND (path LIKE ? OR hash LIKE ?)"
         args += [pattern, pattern]
-    with sqlite3.connect(DB_PATH) as conn:
+    order = "hash, id DESC" if dup else "id DESC"
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, path, algo, hash, created_at FROM hash_history"
-            f" WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            "SELECT id, path, algo, hash, elapsed_ms, created_at FROM hash_history"
+            f" WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             (*args, PER_PAGE, offset)
         ).fetchall()
         total = conn.execute(
@@ -94,8 +115,17 @@ def _list_history(uid, q=None, page=1):
 
 def _delete_history(entry_id, uid):
     with _db_lock:
-        with sqlite3.connect(DB_PATH) as conn:
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
             conn.execute("DELETE FROM hash_history WHERE id = ? AND uid = ?", (entry_id, uid))
+
+
+def _int_param(qs, name, default):
+    """取整型查询参数：缺失或非数字时回退到 default。
+    直接 int() 会让非法输入在处理线程里抛 ValueError，客户端只能看到连接被重置。"""
+    try:
+        return int(qs.get(name, [""])[0])
+    except (TypeError, ValueError):
+        return default
 
 
 # ── 异步哈希任务 ──────────────────────────────────────────────
@@ -105,6 +135,8 @@ def _delete_history(entry_id, uid):
 _tasks = {}
 _tasks_lock = threading.Lock()
 TASK_TTL = 3600  # 已结束任务保留 1 小时，供前端（含刷新后）取结果
+# 单次 status 响应最多返回的结果条数，配合 since 把响应体钉死为常量大小
+STATUS_CHUNK = 500
 
 
 def _purge_tasks():
@@ -119,18 +151,14 @@ def _purge_tasks():
 def _run_hash_task(task, path, algos, recursive, expected, sub_timeout):
     try:
         results = compute_hashes(path, algos, recursive, expected, sub_timeout, task)
-        try:
-            if results:
-                _save_history(results, task["uid"])
-        except Exception:
-            pass
+        # 历史记录已在 compute_hashes 中逐条即时落库，此处无需再批量写入
         task["results"] = results
         task["status"] = "cancelled" if task["cancelled"] else "done"
     except Exception as exc:
         task["error"] = str(exc)
         task["status"] = "error"
     finally:
-        task["proc"] = None
+        task["procs"] = None
         task["finished_at"] = time.time()
 
 
@@ -177,69 +205,104 @@ def compute_hashes(path, algos, recursive, expected, sub_timeout=None, task=None
                             "error": "无读取权限，请先至应用设置内添加文件夹读取权限"})
         if task is not None:
             task["done"] = len(results)
+            task["results"] = results  # 预填的 error 行也即时可见
+            for r in results:
+                _save_history_one(r, task["uid"])
 
-    for f in files:
-        for a in algos:
+    # 并行计算：把 (file, algo) 展平为工作单元，用线程池并发执行 *sum 子进程。
+    # append/done/发布/落库全在主线程的 as_completed 循环里，worker 只返回 entry，
+    # 天然无竞态。*sum 为外部子进程，线程只是阻塞等待其 I/O，GIL 不影响并行。
+    jobs = [(f, a) for f in files for a in algos if ALGO_CMDS.get(a)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        future_map = {pool.submit(_hash_one, f, a, expected, sub_timeout, task): (f, a)
+                      for f, a in jobs}
+        for fut in concurrent.futures.as_completed(future_map):
             if task is not None and task["cancelled"]:
-                return results
-            cmd = ALGO_CMDS.get(a)
-            if not cmd:
+                for x in future_map:  # 取消尚未开始的 future，已完成的仍收集
+                    x.cancel()
+                break
+            entry = fut.result()
+            if entry is None:  # worker 检测到 cancelled，跳过
                 continue
-            hash_val = None
-            err = None
-            # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
-            # 不再依赖子进程 stderr 文本（受 locale 影响）
-            if not os.access(f, os.R_OK):
-                err = "无读取权限，请先至应用设置内添加文件夹读取权限"
-            else:
-                try:
-                    # 用 Popen 而非 subprocess.run：把进程句柄挂到任务上，
-                    # 取消时可直接 kill 正在计算的子进程
-                    proc = subprocess.Popen(
-                        [cmd, "--", f],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                    )
-                    if task is not None:
-                        task["proc"] = proc
-                        # 发布句柄后重查取消标志，堵住取消落在 Popen 与句柄
-                        # 发布之间的窗口：取消方看到句柄则由它 kill，否则这里自行 kill
-                        if task["cancelled"]:
-                            proc.kill()
-                    try:
-                        out, errout = proc.communicate(timeout=sub_timeout)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.communicate()
-                        raise
-                    finally:
-                        if task is not None:
-                            task["proc"] = None
-                    if task is not None and task["cancelled"]:
-                        return results
-                    if proc.returncode == 0:
-                        parts = out.split()
-                        if parts:
-                            hash_val = parts[0]
-                        else:
-                            err = f"{cmd} produced no output"
-                    else:
-                        err = errout.strip() or "hash command failed"
-                except subprocess.TimeoutExpired:
-                    err = f"{cmd} timed out after {sub_timeout}s"
-                except FileNotFoundError:
-                    err = f"command not found: {cmd}"
-
-            entry = {"file": f, "algo": a, "hash": hash_val}
-            if err:
-                entry["error"] = err
-            if expected:
-                entry["verified"] = (hash_val == expected)
-                entry["expected"] = expected
             results.append(entry)
             if task is not None:
                 task["done"] = len(results)
+                # 每完成一项即发布，运行中的轮询可拿到已完成部分供前端实时渲染
+                task["results"] = results
+                # 即时落库：即便后续任务被取消或网关中断，已算出的结果也已持久化
+                _save_history_one(entry, task["uid"])
 
     return results
+
+
+def _hash_one(f, a, expected, sub_timeout, task):
+    """计算单个 (file, algo) 的哈希，供线程池并行调用。
+    返回 entry dict；若任务已取消则返回 None。"""
+    if task is not None and task["cancelled"]:
+        return None
+    cmd = ALGO_CMDS.get(a)
+    hash_val = None
+    err = None
+    elapsed_ms = None  # 仅实际执行子进程时计时；权限不足等行无耗时
+    # 先用 os.access 预检读权限：不可读时直接给出可操作提示，
+    # 不再依赖子进程 stderr 文本（受 locale 影响）
+    if not os.access(f, os.R_OK):
+        err = "无读取权限，请先至应用设置内添加文件夹读取权限"
+    else:
+        _t0 = time.perf_counter()
+        try:
+            # 用 Popen 而非 subprocess.run：把进程句柄注册到任务的进程集合，
+            # 取消时可 kill 全部正在计算的子进程
+            proc = subprocess.Popen(
+                [cmd, "--", f],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            if task is not None:
+                with task["procs_lock"]:
+                    # 发布句柄后重查取消标志，堵住取消落在 Popen 与注册之间
+                    # 的窗口：取消方看到句柄则由它 kill，否则这里自行 kill
+                    if task["cancelled"]:
+                        proc.kill()
+                    task["procs"].add(proc)
+            try:
+                out, errout = proc.communicate(timeout=sub_timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            finally:
+                if task is not None:
+                    with task["procs_lock"]:
+                        task["procs"].discard(proc)
+            if task is not None and task["cancelled"]:
+                return None
+            if proc.returncode == 0:
+                parts = out.split()
+                if parts:
+                    hash_val = parts[0]
+                else:
+                    err = f"{cmd} produced no output"
+            else:
+                err = errout.strip() or "hash command failed"
+        except subprocess.TimeoutExpired:
+            err = f"{cmd} timed out after {sub_timeout}s"
+        except FileNotFoundError:
+            err = f"command not found: {cmd}"
+        # 实际执行过子进程即记录耗时（成功/超时/非零退出）；命令不存在跳过
+        if "command not found" not in (err or ""):
+            elapsed_ms = int((time.perf_counter() - _t0) * 1000)
+
+    entry = {"file": f, "algo": a, "hash": hash_val}
+    if elapsed_ms is not None:
+        entry["elapsed_ms"] = elapsed_ms
+    if err:
+        entry["error"] = err
+    if expected:
+        # *sum 输出小写，但用户粘贴的校验值常为大写，比对需忽略大小写；
+        # expected 回显保持用户原始输入
+        entry["verified"] = hash_val is not None and hash_val.lower() == expected.lower()
+        entry["expected"] = expected
+    return entry
 
 
 class HashHandler(SimpleHTTPRequestHandler):
@@ -324,7 +387,7 @@ class HashHandler(SimpleHTTPRequestHandler):
             if not algos:
                 return self._json({"success": False, "error": f"No valid algorithm: {algo_param}"}, 400)
 
-        raw_timeout = int(qs.get("timeout", ["60"])[0])
+        raw_timeout = _int_param(qs, "timeout", 60)
         sub_timeout = raw_timeout if raw_timeout > 0 else None
 
         task = {
@@ -333,7 +396,8 @@ class HashHandler(SimpleHTTPRequestHandler):
             "path": path,
             "status": "running",
             "cancelled": False,
-            "proc": None,
+            "procs": set(),          # 正在运行的 *sum 子进程集合，取消时 kill 全部
+            "procs_lock": threading.Lock(),
             "results": None,
             "error": None,
             "done": 0,
@@ -366,9 +430,20 @@ class HashHandler(SimpleHTTPRequestHandler):
             return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
         resp = {"success": True, "status": task["status"],
                 "done": task["done"], "total": task["total"]}
+        # 运行中也返回已完成的 results，供前端实时渲染。results 只追加、既不重排
+        # 也不删除，下标因此是稳定的：客户端用 since 报告已收到的条数，这里只回传
+        # 增量。否则每轮都要重传全量，响应体和前端的合并开销都随结果数线性增长。
+        # 切片同时也充当快照，避免序列化到一半时后台线程正在 append。
+        results = task["results"]
+        if results is not None:
+            since = max(0, _int_param(parse_qs(parsed.query), "since", 0))
+            chunk = results[since:since + STATUS_CHUNK]
+            resp["results"] = chunk
+            resp["since"] = since
+            # 积压超过一个 chunk 时置 more，客户端应立即续拉而不是等下一轮退避
+            resp["more"] = since + len(chunk) < len(results)
         if task["status"] in ("done", "cancelled"):
             resp["path"] = task["path"]
-            resp["results"] = task["results"]
         elif task["status"] == "error":
             resp["error"] = task["error"]
         self._json(resp)
@@ -378,12 +453,14 @@ class HashHandler(SimpleHTTPRequestHandler):
         if not task:
             return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
         task["cancelled"] = True
-        proc = task["proc"]
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        procs = task["procs"]
+        if procs:
+            with task["procs_lock"]:
+                for proc in list(procs):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         self._json({"success": True})
 
     def _json(self, data, status=200):
@@ -397,9 +474,10 @@ class HashHandler(SimpleHTTPRequestHandler):
     def _handle_history_list(self, parsed):
         qs = parse_qs(parsed.query)
         q    = qs.get("q",    [""])[0].strip() or None
-        page = max(1, int(qs.get("page", ["1"])[0]))
+        page = max(1, _int_param(qs, "page", 1))
+        dup  = qs.get("dup",  [""])[0].lower() in ("1", "true")
         try:
-            entries, total = _list_history(self._uid(), q, page)
+            entries, total = _list_history(self._uid(), q, page, dup)
             pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
             self._json({"success": True, "entries": entries,
                         "total": total, "page": page, "pages": pages})

@@ -1,4 +1,5 @@
 .DS_Store
-*.fpk
 __pycache__/
+.zcode/
+*.fpk
 *.db
