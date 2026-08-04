@@ -67,17 +67,47 @@ hash_cmd() {
     esac
 }
 
+# 结果通过全局变量返回而非 stdout：命令替换会开子 shell，
+# 在里面设置的错误信息传不回调用方
+HASH_VAL=""
+HASH_ERR=""
 compute_hash() {
-    local file="$1" algo="$2"
-    local cmd
+    local file="$1" algo="$2" cmd out rc
+    HASH_VAL=""
+    HASH_ERR=""
     cmd=$(hash_cmd "$algo")
-    [ -z "$cmd" ] && echo "" && return 1
-    "$cmd" -- "$file" 2>/dev/null | awk '{print $1}'
+    if [ ! -r "$file" ]; then
+        HASH_ERR="无读取权限，请先至应用设置内添加文件夹读取权限"
+        return 1
+    fi
+    out=$("$cmd" -- "$file" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        # 错误文本可能含换行/制表符，会破坏 JSON 分支的 TSV 管道，统一压成空格
+        HASH_ERR="${out:-$cmd exited with status $rc}"
+        HASH_ERR="${HASH_ERR//[$'\n\t']/ }"
+        return 1
+    fi
+    HASH_VAL="${out%% *}"   # "<hash>  <file>" 取首字段
+    if [ -z "$HASH_VAL" ]; then
+        HASH_ERR="$cmd produced no output"
+        return 1
+    fi
+    return 0
 }
 
 if [ "$ALGO" = "all" ]; then
     ALGOS=(sha256 md5 sha1 sha512 blake3)
 else
+    # 提前校验算法名，否则会静默输出一堆空哈希且退出码为 0
+    if [ -z "$(hash_cmd "$ALGO")" ]; then
+        if $JSON; then
+            printf '{"success":false,"error":"Unknown algorithm: %s"}\n' "$ALGO"
+        else
+            echo "Error: unknown algorithm: $ALGO" >&2
+        fi
+        exit 1
+    fi
     ALGOS=("$ALGO")
 fi
 
@@ -109,35 +139,53 @@ if $JSON; then
     {
         for file in "${FILES[@]}"; do
             for algo in "${ALGOS[@]}"; do
-                hash=$(compute_hash "$file" "$algo")
-                printf '%s\t%s\t%s\t%s\n' "$file" "$algo" "$hash" "$EXPECTED"
+                compute_hash "$file" "$algo"
+                printf '%s\t%s\t%s\t%s\t%s\n' "$file" "$algo" "$HASH_VAL" "$EXPECTED" "$HASH_ERR"
             done
         done
     } | python3 -c "
 import sys, json
 results = []
+failed = False
 for line in sys.stdin:
     parts = line.rstrip('\n').split('\t')
-    if len(parts) < 4:
+    if len(parts) < 5:
         continue
-    file_path, algo, hash_val, expected = parts[0], parts[1], parts[2], parts[3]
+    file_path, algo, hash_val, expected, err = parts[0], parts[1], parts[2], parts[3], parts[4]
     entry = {'file': file_path, 'algo': algo, 'hash': hash_val or None}
+    if err:
+        entry['error'] = err
+        failed = True
     if expected:
-        entry['verified'] = (hash_val == expected)
+        entry['verified'] = (hash_val.lower() == expected.lower())
         entry['expected'] = expected
+        if not entry['verified']:
+            failed = True   # 与文本模式一致：校验不通过也以非 0 退出
     results.append(entry)
 print(json.dumps({'success': True, 'results': results}, ensure_ascii=False))
+sys.exit(1 if failed else 0)
 "
+    # 管道左侧在子 shell 中运行，失败标记取自 python 的退出码
+    EXIT_CODE=$?
 else
+    EXIT_CODE=0
     for file in "${FILES[@]}"; do
         for algo in "${ALGOS[@]}"; do
-            hash=$(compute_hash "$file" "$algo")
+            if ! compute_hash "$file" "$algo"; then
+                echo "Error: $file ($algo): $HASH_ERR" >&2
+                EXIT_CODE=1
+                continue
+            fi
             if [ -n "$EXPECTED" ]; then
-                [ "$hash" = "$EXPECTED" ] && status="OK" || status="FAIL"
-                printf "%-8s  %s  %s  [%s]\n" "$algo" "$hash" "$file" "$status"
+                # *sum 输出小写，粘贴来的校验值常为大写，比对忽略大小写
+                [ "${HASH_VAL,,}" = "${EXPECTED,,}" ] && status="OK" || status="FAIL"
+                [ "$status" = "FAIL" ] && EXIT_CODE=1
+                printf "%-8s  %s  %s  [%s]\n" "$algo" "$HASH_VAL" "$file" "$status"
             else
-                printf "%-8s  %s  %s\n" "$algo" "$hash" "$file"
+                printf "%-8s  %s  %s\n" "$algo" "$HASH_VAL" "$file"
             fi
         done
     done
 fi
+
+exit $EXIT_CODE
