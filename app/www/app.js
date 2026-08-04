@@ -2,11 +2,10 @@
 
 const $ = id => document.getElementById(id);
 
+// 路径需在 setupInputClear() 之前写入，否则清除按钮会被判为空值而隐藏；
+// 自动计算则延到文件末尾（此处 run() 依赖的 const 尚在 TDZ 中）
 const _initPath = new URLSearchParams(window.location.search).get('path');
-if (_initPath) {
-  $('path').value = _initPath;
-  setTimeout(run, 200);
-}
+if (_initPath) $('path').value = _initPath;
 
 const pathInput      = $('path');
 const recursiveChk   = $('recursive');
@@ -200,11 +199,15 @@ historySearch.addEventListener('keydown', e => {
 });
 historySearchBtn.addEventListener('click', doHistorySearch);
 
+function setDupActive(on) {
+  _hDup = on;
+  historyDupBtn.classList.toggle('btn-primary', on);
+  historyDupBtn.classList.toggle('btn-ghost', !on);
+}
+
 // 相同文件：切换按哈希值分组视图，仅展示出现 >1 次的哈希组
 historyDupBtn.addEventListener('click', () => {
-  _hDup = !_hDup;
-  historyDupBtn.classList.toggle('btn-primary', _hDup);
-  historyDupBtn.classList.toggle('btn-ghost', !_hDup);
+  setDupActive(!_hDup);
   _hPage = 1;
   loadHistory();
 });
@@ -219,9 +222,7 @@ function openHistory() {
   historySearch.value = '';
   _hQuery = '';
   _hPage  = 1;
-  _hDup   = false;
-  historyDupBtn.classList.remove('btn-primary');
-  historyDupBtn.classList.add('btn-ghost');
+  setDupActive(false);
   historyOverlay.hidden = false;
   loadHistory();
 }
@@ -240,15 +241,15 @@ async function loadHistory() {
     const res  = await fetch('api/history?' + params);
     const data = await res.json();
     if (!data.success) { historyList.innerHTML = `<p class="hist-empty">${esc(data.error)}</p>`; return; }
-    if (_hDup) renderDupGroups(data.entries, data.total);
-    else renderHistoryList(data.entries, data.total);
+    if (_hDup) renderDupGroups(data.entries);
+    else renderHistoryList(data.entries);
     renderPager(data.page, data.pages);
   } catch {
     historyList.innerHTML = '<p class="hist-empty">加载失败</p>';
   }
 }
 
-function renderHistoryList(entries, total) {
+function renderHistoryList(entries) {
   if (entries.length === 0) {
     historyList.innerHTML = '<p class="hist-empty">暂无历史记录</p>';
     return;
@@ -281,7 +282,10 @@ function renderHistoryList(entries, total) {
     tr.querySelector('.hist-del').addEventListener('click', async () => {
       try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
-      if (!tbody.querySelector('tr')) loadHistory();
+      if (!tbody.querySelector('tr')) {
+        if (_hPage > 1) _hPage--;  // 删空当前页后回退一页，避免停在不存在的空页
+        loadHistory();
+      }
     });
     tbody.appendChild(tr);
   }
@@ -291,7 +295,7 @@ function renderHistoryList(entries, total) {
 }
 
 // 相同文件分组视图：后端按 hash 排序返回，连续相同 hash 聚为一组
-function renderDupGroups(entries, total) {
+function renderDupGroups(entries) {
   if (entries.length === 0) {
     historyList.innerHTML = '<p class="hist-empty">没有相同哈希值的文件</p>';
     return;
@@ -372,7 +376,8 @@ function renderFromState() {
   const rows = flattenState();
   if (rows.length === 0) { resultsEl.hidden = true; return; }
 
-  const expected = expectedInput.value.trim();
+  // 统一转小写：*sum 输出小写，而用户粘贴的校验值常为大写
+  const expected = expectedInput.value.trim().toLowerCase();
   const verifyMode = expected.length > 0;
 
   thStatus.style.display = verifyMode ? '' : 'none';
@@ -383,11 +388,11 @@ function renderFromState() {
   for (const r of rows) {
     const tr = document.createElement('tr');
     const hasError = !r.hash && r.error;
+    const matched = verifyMode && !hasError && String(r.hash).toLowerCase() === expected;
 
     if (hasError) {
       errCount++;
     } else if (verifyMode) {
-      const matched = r.hash === expected;
       tr.className = matched ? 'row-ok' : 'row-fail';
       matched ? ok++ : fail++;
     }
@@ -404,7 +409,7 @@ function renderFromState() {
     } else if (hasError) {
       statusCell = '<td class="col-status"><span class="badge badge-err">错误</span></td>';
     } else {
-      statusCell = r.hash === expected
+      statusCell = matched
         ? '<td class="col-status"><span class="badge badge-ok">✓ 匹配</span></td>'
         : '<td class="col-status"><span class="badge badge-fail">✗ 不匹配</span></td>';
     }
@@ -515,6 +520,10 @@ function fallbackCopy(text, btn, done) {
   try { document.execCommand('copy'); done(); } catch { btn.textContent = '复制失败'; }
   document.body.removeChild(ta);
 }
+
+// ── Auto-run ─────────────────────────────────────────────────
+// 由文件管理器"用 HashFile 打开"带 ?path= 进入时自动开算
+if (_initPath) run();
 
 function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
 function clearError()   { errorBox.hidden = true; }
