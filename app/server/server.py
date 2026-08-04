@@ -11,6 +11,7 @@ import subprocess
 import threading
 import socketserver
 import concurrent.futures
+from contextlib import closing
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -48,7 +49,9 @@ _db_lock = threading.Lock()
 
 def _init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    # sqlite3 连接自身的上下文管理器只提交/回滚事务，不会关闭连接，
+    # 因此一律用 closing() 包一层，避免每次请求泄漏一个连接。
+    with closing(sqlite3.connect(DB_PATH)) as conn, conn:
         conn.execute("PRAGMA encoding = 'UTF-8'")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS hash_history (
@@ -75,7 +78,7 @@ def _save_history_one(entry, uid):
     已算出的结果丢失。hash_history 表 algo 为自由 TEXT，成功与错误（hash=None）均写入。"""
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _db_lock:
-        with sqlite3.connect(DB_PATH) as conn:
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
             conn.execute(
                 "INSERT INTO hash_history (uid, path, algo, hash, elapsed_ms, created_at) VALUES (?,?,?,?,?,?)",
                 (uid, entry["file"], entry["algo"], entry.get("hash"), entry.get("elapsed_ms"), created_at)
@@ -97,7 +100,7 @@ def _list_history(uid, q=None, page=1, dup=False):
         where += " AND (path LIKE ? OR hash LIKE ?)"
         args += [pattern, pattern]
     order = "hash, id DESC" if dup else "id DESC"
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, path, algo, hash, elapsed_ms, created_at FROM hash_history"
@@ -112,8 +115,17 @@ def _list_history(uid, q=None, page=1, dup=False):
 
 def _delete_history(entry_id, uid):
     with _db_lock:
-        with sqlite3.connect(DB_PATH) as conn:
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
             conn.execute("DELETE FROM hash_history WHERE id = ? AND uid = ?", (entry_id, uid))
+
+
+def _int_param(qs, name, default):
+    """取整型查询参数：缺失或非数字时回退到 default。
+    直接 int() 会让非法输入在处理线程里抛 ValueError，客户端只能看到连接被重置。"""
+    try:
+        return int(qs.get(name, [""])[0])
+    except (TypeError, ValueError):
+        return default
 
 
 # ── 异步哈希任务 ──────────────────────────────────────────────
@@ -284,7 +296,9 @@ def _hash_one(f, a, expected, sub_timeout, task):
     if err:
         entry["error"] = err
     if expected:
-        entry["verified"] = (hash_val == expected)
+        # *sum 输出小写，但用户粘贴的校验值常为大写，比对需忽略大小写；
+        # expected 回显保持用户原始输入
+        entry["verified"] = hash_val is not None and hash_val.lower() == expected.lower()
         entry["expected"] = expected
     return entry
 
@@ -371,7 +385,7 @@ class HashHandler(SimpleHTTPRequestHandler):
             if not algos:
                 return self._json({"success": False, "error": f"No valid algorithm: {algo_param}"}, 400)
 
-        raw_timeout = int(qs.get("timeout", ["60"])[0])
+        raw_timeout = _int_param(qs, "timeout", 60)
         sub_timeout = raw_timeout if raw_timeout > 0 else None
 
         task = {
@@ -451,7 +465,7 @@ class HashHandler(SimpleHTTPRequestHandler):
     def _handle_history_list(self, parsed):
         qs = parse_qs(parsed.query)
         q    = qs.get("q",    [""])[0].strip() or None
-        page = max(1, int(qs.get("page", ["1"])[0]))
+        page = max(1, _int_param(qs, "page", 1))
         dup  = qs.get("dup",  [""])[0].lower() in ("1", "true")
         try:
             entries, total = _list_history(self._uid(), q, page, dup)
