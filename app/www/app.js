@@ -55,8 +55,11 @@ function getSelectedAlgos() {
 }
 
 // ── Expected input → live re-verify ─────────────────────────
+// 校验值变化要整表重绘，逐次按键都重绘在大结果集上会卡顿，故做短去抖
+let _expectedTimer = null;
 expectedInput.addEventListener('input', () => {
-  if (state.size > 0) renderFromState();
+  clearTimeout(_expectedTimer);
+  _expectedTimer = setTimeout(() => { if (state.size > 0) renderFromState(); }, 150);
 });
 
 // ── Abort ───────────────────────────────────────────────────
@@ -113,18 +116,15 @@ async function run() {
     currentTaskId = data.task;
     if (cancelRequested) sendCancel(currentTaskId);  // 中止点在任务 id 返回之前：补发取消
 
+    // pollTask 对每个增量分片（含终态那次）都会回调 onProgress，所以这里不再做
+    // 兜底合并——增量协议下重复喂同一批结果会把行渲染两遍
     const d = await pollTask(data.task, activeController.signal, partial => {
       mergeResults(partial);
-      renderFromState();
+      renderNewRows(partial);
     });
     if (d.status === 'error') { showError(d.error || '计算失败'); return; }
-    // 终态结果兜底合并：取消等情况下最后一次轮询可能未触发 onProgress
-    if (d.results && d.results.length) {
-      mergeResults(d.results);
-      renderFromState();
-    }
     if (d.status === 'cancelled') {
-      showError(d.results && d.results.length ? '已中止计算，已完成部分的结果已保留' : '已中止计算');
+      showError(state.size > 0 ? '已中止计算，已完成部分的结果已保留' : '已中止计算');
     }
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -142,11 +142,13 @@ async function run() {
 async function pollTask(id, signal, onProgress) {
   let delay = 1000;
   let failures = 0;
+  let have = 0;  // 已收到的结果条数，作为下次请求的 since 游标
   while (true) {
     await sleep(delay);
     let d;
     try {
-      const res = await fetch('api/hash/status?id=' + id, { signal });
+      // since 让服务端只回传增量：全量轮询下响应体与前端合并开销都是 O(结果数)
+      const res = await fetch(`api/hash/status?id=${id}&since=${have}`, { signal });
       d = await res.json();
       failures = 0;
     } catch (e) {
@@ -155,8 +157,14 @@ async function pollTask(id, signal, onProgress) {
     }
     if (!d.success) return { status: 'error', error: d.error || '查询任务状态失败' };
     // 运行中即时合并已完成的结果并渲染，让用户不必等全部算完才看到
-    if (d.results && d.results.length && onProgress) onProgress(d.results);
+    if (d.results && d.results.length) {
+      have += d.results.length;
+      if (onProgress) onProgress(d.results);
+    }
     if (d.total > 1) loadingText.textContent = `计算中（${d.done}/${d.total}），请稍候…`;
+    // 服务端单次最多回 STATUS_CHUNK 条；还有积压就立刻续拉。这个判断必须排在
+    // 终态判断之前，否则任务已 done 时会漏掉尾部未取的分片
+    if (d.more) { delay = 0; continue; }
     if (d.status !== 'running') return d;
     delay = Math.min(delay + 500, 3000);  // 缓步退避，长任务减少无谓轮询
   }
@@ -165,7 +173,7 @@ async function pollTask(id, signal, onProgress) {
 // ── Clear ───────────────────────────────────────────────────
 clearBtn.addEventListener('click', () => {
   state.clear();
-  resultsEl.hidden = true;
+  renderFromState();  // 同步清掉 DOM 与 renderedRows/counts，否则增量渲染基准会失配
   clearError();
 });
 
@@ -372,77 +380,158 @@ function flattenState() {
 }
 
 // ── Render ───────────────────────────────────────────────────
-function renderFromState() {
-  const rows = flattenState();
-  if (rows.length === 0) { resultsEl.hidden = true; return; }
+// 结果是流式到达的，整表重绘会让每轮轮询的开销都是 O(总行数)。改为增量插入：
+// renderedRows 与 resultsBody.children 严格一一对应且同序，新行二分定位后插到
+// 对应位置，单轮开销只与该轮新增的条数有关。校验值变化才整表重绘。
+let renderedRows = [];
+let renderedExpected = '';                       // 当前 DOM 所依据的校验值
+let counts = { ok: 0, fail: 0, err: 0 };
 
-  // 统一转小写：*sum 输出小写，而用户粘贴的校验值常为大写
-  const expected = expectedInput.value.trim().toLowerCase();
-  const verifyMode = expected.length > 0;
+// 行序：先按文件路径（与 flattenState 的默认字符串排序一致），再按算法固定次序
+function rowCmp(a, b) {
+  if (a.file < b.file) return -1;
+  if (a.file > b.file) return 1;
+  return ALGO_ORDER.indexOf(a.algo) - ALGO_ORDER.indexOf(b.algo);
+}
 
-  thStatus.style.display = verifyMode ? '' : 'none';
-  resultsBody.innerHTML = '';
+// 行归属的统计桶；无校验值且非错误时不计入任何桶
+function bucketOf(r, expected) {
+  if (!r.hash && r.error) return 'err';
+  if (!expected) return null;
+  return String(r.hash).toLowerCase() === expected ? 'ok' : 'fail';
+}
 
-  let ok = 0, fail = 0, errCount = 0;
+function buildRowHTML(r, expected, bucket) {
+  const hasError = bucket === 'err';
+  const cls = (!expected || hasError) ? '' : ` class="${bucket === 'ok' ? 'row-ok' : 'row-fail'}"`;
 
-  for (const r of rows) {
-    const tr = document.createElement('tr');
-    const hasError = !r.hash && r.error;
-    const matched = verifyMode && !hasError && String(r.hash).toLowerCase() === expected;
+  const hashCell = hasError
+    ? `<td class="col-hash hash-error" title="${esc(r.error)}"><span class="err-icon">⚠</span> ${esc(r.error)}</td>`
+    : `<td class="col-hash"><code>${esc(r.hash)}</code></td>`;
 
-    if (hasError) {
-      errCount++;
-    } else if (verifyMode) {
-      tr.className = matched ? 'row-ok' : 'row-fail';
-      matched ? ok++ : fail++;
-    }
-
-    const name = baseName(r.file);
-
-    const hashCell = hasError
-      ? `<td class="col-hash hash-error" title="${esc(r.error)}"><span class="err-icon">⚠</span> ${esc(r.error)}</td>`
-      : `<td class="col-hash"><code>${esc(r.hash)}</code></td>`;
-
-    let statusCell;
-    if (!verifyMode) {
-      statusCell = '<td class="col-status" style="display:none"></td>';
-    } else if (hasError) {
-      statusCell = '<td class="col-status"><span class="badge badge-err">错误</span></td>';
-    } else {
-      statusCell = matched
-        ? '<td class="col-status"><span class="badge badge-ok">✓ 匹配</span></td>'
-        : '<td class="col-status"><span class="badge badge-fail">✗ 不匹配</span></td>';
-    }
-
-    const copyCell = hasError
-      ? '<td class="col-action"></td>'
-      : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
-
-    tr.innerHTML = `
-      <td class="col-file" title="${esc(r.file)}">${esc(name)}</td>
-      <td class="col-algo">${fmtAlgo(r.algo)}</td>
-      ${hashCell}
-      <td class="col-time">${fmtDuration(r.elapsed_ms)}</td>
-      ${statusCell}${copyCell}
-    `;
-    resultsBody.appendChild(tr);
-  }
-
-  if (verifyMode) {
-    const errPart = errCount ? `，${errCount} 错误` : '';
-    summaryEl.textContent = `${state.size} 个文件，${rows.length} 项：${ok} 匹配，${fail} 不匹配${errPart}`;
-    summaryEl.className = 'summary ' + (fail > 0 ? 'summary-fail' : 'summary-ok');
+  let statusCell;
+  if (!expected) {
+    statusCell = '<td class="col-status" style="display:none"></td>';
+  } else if (hasError) {
+    statusCell = '<td class="col-status"><span class="badge badge-err">错误</span></td>';
   } else {
-    summaryEl.textContent = `${state.size} 个文件，${rows.length} 项结果`;
-    summaryEl.className = 'summary';
+    statusCell = bucket === 'ok'
+      ? '<td class="col-status"><span class="badge badge-ok">✓ 匹配</span></td>'
+      : '<td class="col-status"><span class="badge badge-fail">✗ 不匹配</span></td>';
   }
 
-  resultsBody.querySelectorAll('.btn-copy').forEach(btn => {
-    btn.addEventListener('click', () => copyText(btn.dataset.v, btn));
-  });
+  const copyCell = hasError
+    ? '<td class="col-action"></td>'
+    : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
 
+  return `<tr${cls}>`
+    + `<td class="col-file" title="${esc(r.file)}">${esc(baseName(r.file))}</td>`
+    + `<td class="col-algo">${fmtAlgo(r.algo)}</td>`
+    + hashCell
+    + `<td class="col-time">${fmtDuration(r.elapsed_ms)}</td>`
+    + statusCell + copyCell
+    + '</tr>';
+}
+
+const _rowTpl = document.createElement('template');
+function rowElement(html) {
+  _rowTpl.innerHTML = html;
+  return _rowTpl.content.firstElementChild;
+}
+
+// 二分定位后插入单行；同 (file, algo) 重算则替换并回退旧的计数
+function insertRow(r, expected) {
+  let lo = 0, hi = renderedRows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rowCmp(renderedRows[mid], r) < 0) lo = mid + 1; else hi = mid;
+  }
+  const bucket = bucketOf(r, expected);
+  const tr = rowElement(buildRowHTML(r, expected, bucket));
+  if (lo < renderedRows.length && rowCmp(renderedRows[lo], r) === 0) {
+    const old = bucketOf(renderedRows[lo], expected);
+    if (old) counts[old]--;
+    resultsBody.children[lo].replaceWith(tr);
+    renderedRows[lo] = r;
+  } else {
+    resultsBody.insertBefore(tr, resultsBody.children[lo] || null);
+    renderedRows.splice(lo, 0, r);
+  }
+  if (bucket) counts[bucket]++;
+}
+
+// 增量渲染一批新到的结果
+function renderNewRows(entries) {
+  const expected = expectedInput.value.trim().toLowerCase();
+  if (expected !== renderedExpected) { renderFromState(); return; }  // 校验值变了：整表重绘
+
+  const batch = entries.filter(r => ALGO_ORDER.includes(r.algo)).sort(rowCmp);
+  if (batch.length === 0) return;
+
+  const last = renderedRows[renderedRows.length - 1];
+  if (last && rowCmp(batch[0], last) <= 0) {
+    for (const r of batch) insertRow(r, expected);   // 有乱序，逐行定位
+  } else {
+    // 整批都排在已渲染内容之后（并行完成顺序大体有序，这是常见情况）：
+    // 拼成一个字符串一次性解析，省掉逐行的 DOM 解析
+    const html = [];
+    for (const r of batch) {
+      const bucket = bucketOf(r, expected);
+      if (bucket) counts[bucket]++;
+      html.push(buildRowHTML(r, expected, bucket));
+      renderedRows.push(r);
+    }
+    resultsBody.insertAdjacentHTML('beforeend', html.join(''));
+  }
+
+  thStatus.style.display = expected ? '' : 'none';
+  updateSummary();
   resultsEl.hidden = false;
 }
+
+// 整表重绘：校验值变化、清空、以及首次进入增量渲染前的兜底
+function renderFromState() {
+  const rows = flattenState();
+  renderedExpected = expectedInput.value.trim().toLowerCase();
+  renderedRows = rows;
+  counts = { ok: 0, fail: 0, err: 0 };
+
+  if (rows.length === 0) {
+    resultsBody.innerHTML = '';
+    resultsEl.hidden = true;
+    return;
+  }
+
+  thStatus.style.display = renderedExpected ? '' : 'none';
+  const html = [];
+  for (const r of rows) {
+    const bucket = bucketOf(r, renderedExpected);
+    if (bucket) counts[bucket]++;
+    html.push(buildRowHTML(r, renderedExpected, bucket));
+  }
+  resultsBody.innerHTML = html.join('');  // 一次解析，替代逐行 appendChild
+
+  updateSummary();
+  resultsEl.hidden = false;
+}
+
+function updateSummary() {
+  const n = renderedRows.length;
+  if (renderedExpected) {
+    const errPart = counts.err ? `，${counts.err} 错误` : '';
+    summaryEl.textContent = `${state.size} 个文件，${n} 项：${counts.ok} 匹配，${counts.fail} 不匹配${errPart}`;
+    summaryEl.className = 'summary ' + (counts.fail > 0 ? 'summary-fail' : 'summary-ok');
+  } else {
+    summaryEl.textContent = `${state.size} 个文件，${n} 项结果`;
+    summaryEl.className = 'summary';
+  }
+}
+
+// 复制按钮用事件委托，避免每行各挂一个监听器（整表重绘时还要全部重挂）
+resultsBody.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-copy');
+  if (btn) copyText(btn.dataset.v, btn);
+});
 
 // ── Helpers ──────────────────────────────────────────────────
 function bindCopyCell(cell, fullText, shortText) {

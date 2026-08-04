@@ -135,6 +135,8 @@ def _int_param(qs, name, default):
 _tasks = {}
 _tasks_lock = threading.Lock()
 TASK_TTL = 3600  # 已结束任务保留 1 小时，供前端（含刷新后）取结果
+# 单次 status 响应最多返回的结果条数，配合 since 把响应体钉死为常量大小
+STATUS_CHUNK = 500
 
 
 def _purge_tasks():
@@ -428,11 +430,18 @@ class HashHandler(SimpleHTTPRequestHandler):
             return self._json({"success": False, "error": "任务不存在或已过期"}, 404)
         resp = {"success": True, "status": task["status"],
                 "done": task["done"], "total": task["total"]}
-        # 运行中也返回已完成的 results，供前端实时渲染。
-        # 拷贝快照：后台线程可能正在 append，避免序列化期间并发修改。
+        # 运行中也返回已完成的 results，供前端实时渲染。results 只追加、既不重排
+        # 也不删除，下标因此是稳定的：客户端用 since 报告已收到的条数，这里只回传
+        # 增量。否则每轮都要重传全量，响应体和前端的合并开销都随结果数线性增长。
+        # 切片同时也充当快照，避免序列化到一半时后台线程正在 append。
         results = task["results"]
         if results is not None:
-            resp["results"] = list(results)
+            since = max(0, _int_param(parse_qs(parsed.query), "since", 0))
+            chunk = results[since:since + STATUS_CHUNK]
+            resp["results"] = chunk
+            resp["since"] = since
+            # 积压超过一个 chunk 时置 more，客户端应立即续拉而不是等下一轮退避
+            resp["more"] = since + len(chunk) < len(results)
         if task["status"] in ("done", "cancelled"):
             resp["path"] = task["path"]
         elif task["status"] == "error":
