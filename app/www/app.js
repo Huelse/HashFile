@@ -739,7 +739,7 @@ function buildRowHTML(r, expected, bucket) {
   const openBtn = `<button class="btn-open" data-p="${esc(dirName(r.file))}">打开目录</button>`;
   const copyCell = hasError
     ? `<td class="col-action">${openBtn}</td>`
-    : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button>${openBtn}</td>`;
+    : `<td class="col-action">${openBtn}<button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
 
   return `<tr${cls}>`
     + `<td class="col-file" title="${esc(semCache.get(r.file) || r.file)}">${esc(baseName(r.file))}</td>`

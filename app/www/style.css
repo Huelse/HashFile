@@ -411,7 +411,9 @@ body.has-sdk .btn-open { display: inline-block; }
 .btn-copy:hover:not(:disabled),
 .btn-open:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .btn-copy:disabled { opacity: .6; }
-.col-action button + button { margin-left: 6px; }
+/* 间距只在「打开目录」真的显示时才需要：它被隐藏时相邻选择器仍然成立，
+   不加 has-sdk 限定会给剩下那个按钮留一段无来由的左边距 */
+body.has-sdk .col-action button + button { margin-left: 6px; }
 
 /* History button — no border */
 #history-btn { border-color: transparent; }
@@ -559,7 +561,7 @@ body.has-sdk .btn-open { display: inline-block; }
 }
 /* 操作列定宽：删除按钮会在「删除 / 确认删除」之间切换，不定宽整表会跟着抖 */
 .acc-table .col-act { width: 170px; white-space: nowrap; }
-.hist-table .ht-action button + button { margin-left: 6px; }
+body.has-sdk .hist-table .ht-action button + button { margin-left: 6px; }
 /* 二次确认态标红：再点一下授权就真的没了。hover 规则的选择器更具体，
    否则会被 .btn-copy:hover 的主色盖掉 */
 .acc-del[data-confirm="1"],
