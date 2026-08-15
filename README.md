@@ -3,8 +3,7 @@
 在 fnOS 中计算文件或目录内的 SHA-256/SHA-512/SHA-1/MD5/BLAKE3 哈希值，支持批量处理与校验比对
 
 ## 预览
-<img width="1701" height="1114" alt="image" src="https://github.com/user-attachments/assets/8250916e-b028-43e8-ba19-3f8dfe56ad6a" />
-
+<img width="825" height="512" alt="PixPin_2026-08-15_14-54-32" src="https://github.com/user-attachments/assets/fdb8d237-1871-441a-af92-4e7f2ef5ff8e" />
 
 ## 说明
 
