@@ -148,6 +148,15 @@
        让前端始终有一条确定的降级路径。 -->
   <script>
     window.__sdkReady = new Promise(resolve => { window.__sdkResolve = resolve; });
+
+    // 宿主的桥接层在部分交互（授权弹窗完成/关闭）里会 reject(undefined)：既没有
+    // 错误信息也无从处理，只会在控制台留下一条「Uncaught (in promise) undefined」。
+    // 只吞掉 reason 为空的这一类，有内容的未处理拒绝照常抛出来，不掩盖真问题。
+    window.addEventListener('unhandledrejection', e => {
+      if (e.reason != null) return;
+      e.preventDefault();
+      console.debug('[HashFile] 忽略一次空的 unhandledrejection');
+    });
   </script>
   <script src="app.js"></script>
   <script type="module">
