@@ -535,7 +535,8 @@ body.has-sdk .btn-open { display: inline-block; }
   font-family: var(--mono);
   font-size: .75rem;
   display: block;
-  max-width: 220px;
+  /* 860px 宽的弹窗里，其余五列约占 630px；再宽就会顶出横向滚动条 */
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
