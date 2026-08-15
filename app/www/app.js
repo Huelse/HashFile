@@ -442,7 +442,7 @@ async function loadAccess() {
       <td class="acc-real" title="${esc(p)}">${esc(p)}</td>
       <td class="ht-action col-act">${_sdk ? '<button class="btn-copy acc-open">打开目录</button>' : ''}<button class="btn-copy acc-del">删除</button></td>`;
     const openBtn = tr.querySelector('.acc-open');
-    if (openBtn) bindAccessOpen(openBtn, p);
+    if (openBtn) bindOpenDir(openBtn, p);
     bindAccessDelete(tr.querySelector('.acc-del'), p, tr, tbody);
     tbody.appendChild(tr);
   }
@@ -453,7 +453,7 @@ async function loadAccess() {
 
 // 打开文件管理器并定位到该目录。openFileManager 不需要 api-scope，
 // 但只有宿主环境（isWeb）里才有，故按钮本身就只在 _sdk 可用时才渲染。
-function bindAccessOpen(btn, path) {
+function bindOpenDir(btn, path) {
   btn.addEventListener('click', async () => {
     try {
       await _sdk.openFileManager(path);
@@ -585,10 +585,13 @@ function renderHistoryList(entries) {
       <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(entry.hash || '—')}</code></td>
       <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-time">${esc(entry.created_at)}</td>
-      <td class="ht-action"><button class="btn-copy hist-del">删除</button></td>
+      <td class="ht-action">${_sdk ? '<button class="btn-copy hist-open">打开目录</button>' : ''}<button class="btn-copy hist-del">删除</button></td>
     `;
     bindCopyCell(tr.querySelector('.ht-path'), entry.path);
     if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash);
+    // 历史记录每行是一个文件，定位到它所在的目录
+    const openBtn = tr.querySelector('.hist-open');
+    if (openBtn) bindOpenDir(openBtn, dirName(entry.path));
     tr.querySelector('.hist-del').addEventListener('click', async () => {
       try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
@@ -872,8 +875,9 @@ function fmtAlgo(a) {
   return a === 'md5' ? 'MD5' : a.replace(/^sha(\d+)$/, 'SHA-$1').toUpperCase();
 }
 
-// 取路径的末段作为文件名
+// 取路径的末段作为文件名；取前段作为所在目录（根目录下的文件回 /）
 const baseName = p => p.split('/').pop() || p;
+const dirName  = p => p.slice(0, p.lastIndexOf('/')) || '/';
 
 // 毫秒 → 人类可读：分钟为最大单位。<1s 保留两位小数，<60s 一位，否则分钟
 function fmtDuration(ms) {

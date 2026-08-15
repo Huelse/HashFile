@@ -548,7 +548,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 }
 /* 操作列定宽：删除按钮会在「删除 / 确认删除」之间切换，不定宽整表会跟着抖 */
 .acc-table .col-act { width: 170px; white-space: nowrap; }
-.acc-table .ht-action button + button { margin-left: 6px; }
+.hist-table .ht-action button + button { margin-left: 6px; }
 .acc-hint { color: var(--muted); font-size: .75rem; line-height: 1.5; }
 
 .ht-copy { cursor: pointer; transition: color .1s; }
