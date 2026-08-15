@@ -430,21 +430,39 @@ async function loadAccess() {
 
   const table = document.createElement('table');
   table.className = 'hist-table acc-table';
-  table.innerHTML = '<thead><tr><th>目录</th><th>操作</th></tr></thead><tbody></tbody>';
+  table.innerHTML = '<thead><tr><th>目录</th><th>实际路径</th><th class="col-act">操作</th></tr>'
+                  + '</thead><tbody></tbody>';
   const tbody = table.querySelector('tbody');
 
   for (const p of paths) {
     const tr = document.createElement('tr');
-    // 展示语义化路径，真实路径放 title，与结果表格保持一致
+    // 「打开目录」依赖 JS SDK，后端探测成功但 SDK 不可用（独立浏览器窗口）时不渲染
     tr.innerHTML = `
-      <td class="ht-path" title="${esc(p)}">${esc(semCache.get(p) || p)}</td>
-      <td class="ht-action"><button class="btn-copy acc-del">删除</button></td>`;
+      <td class="ht-path" title="${esc(semCache.get(p) || p)}">${esc(semCache.get(p) || p)}</td>
+      <td class="acc-real" title="${esc(p)}">${esc(p)}</td>
+      <td class="ht-action col-act">${_sdk ? '<button class="btn-copy acc-open">打开目录</button>' : ''}<button class="btn-copy acc-del">删除</button></td>`;
+    const openBtn = tr.querySelector('.acc-open');
+    if (openBtn) bindAccessOpen(openBtn, p);
     bindAccessDelete(tr.querySelector('.acc-del'), p, tr, tbody);
     tbody.appendChild(tr);
   }
 
   accessList.innerHTML = '';
   accessList.appendChild(table);
+}
+
+// 打开文件管理器并定位到该目录。openFileManager 不需要 api-scope，
+// 但只有宿主环境（isWeb）里才有，故按钮本身就只在 _sdk 可用时才渲染。
+function bindAccessOpen(btn, path) {
+  btn.addEventListener('click', async () => {
+    try {
+      await _sdk.openFileManager(path);
+    } catch (e) {
+      console.warn('openFileManager failed:', e);
+      btn.textContent = '打开失败';
+      setTimeout(() => { btn.textContent = '打开目录'; }, 1500);
+    }
+  });
 }
 
 // 删除授权不可撤销（只能重新选一次目录），故要二次确认；3 秒无操作自动复位

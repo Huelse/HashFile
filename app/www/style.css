@@ -535,8 +535,20 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 }
 .ht-action { white-space: nowrap; }
 
-/* 已授权目录：整行就一个路径，不像历史记录那样要挤下 6 列，放开宽度限制 */
-.acc-table .ht-path { max-width: none; word-break: break-all; white-space: normal; }
+/* 已授权目录：语义化路径 + 实际路径 + 操作，两列路径各自省略号截断 */
+.acc-table .ht-path { max-width: 240px; }
+.acc-table .acc-real {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--muted);
+}
+/* 操作列定宽：删除按钮会在「删除 / 确认删除」之间切换，不定宽整表会跟着抖 */
+.acc-table .col-act { width: 170px; white-space: nowrap; }
+.acc-table .ht-action button + button { margin-left: 6px; }
 .acc-hint { color: var(--muted); font-size: .75rem; line-height: 1.5; }
 
 .ht-copy { cursor: pointer; transition: color .1s; }
