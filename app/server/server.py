@@ -328,7 +328,7 @@ def _hash_one(f, a, expected, sub_timeout, task):
     if not os.access(f, os.R_OK):
         err = NO_PERMISSION
     else:
-        _t0 = time.perf_counter()
+        _t0 = time.monotonic()
         try:
             # 用 Popen 而非 subprocess.run：把进程句柄注册到任务的进程集合，
             # 取消时可 kill 全部正在计算的子进程
@@ -382,7 +382,7 @@ def _hash_one(f, a, expected, sub_timeout, task):
             err = f"{cmd}: {exc}"
         # 实际执行过子进程即记录耗时（成功/超时/非零退出）；拉起失败则没有耗时可言
         if ran:
-            elapsed_ms = int((time.perf_counter() - _t0) * 1000)
+            elapsed_ms = int((time.monotonic() - _t0) * 1000)
 
     entry = {"file": f, "algo": a, "hash": hash_val}
     if elapsed_ms is not None:
