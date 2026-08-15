@@ -156,7 +156,11 @@ async function pollTask(id, signal, onProgress) {
       failures = 0;
     } catch (e) {
       if (e.name === 'AbortError' || ++failures >= 3) throw e;
-      continue;  // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃
+      // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃。
+      // delay 可能刚被 more 分支置 0（见下），重试前必须抬回来，
+      // 否则网络一抖就是零间隔连打三次。
+      delay = Math.max(delay, 1000);
+      continue;
     }
     if (!d.success) return { status: 'error', error: d.error || '查询任务状态失败' };
     // 运行中即时合并已完成的结果并渲染，让用户不必等全部算完才看到
