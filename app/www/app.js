@@ -897,13 +897,18 @@ function fmtAlgo(a) {
 const baseName = p => p.split('/').pop() || p;
 const dirName  = p => p.slice(0, p.lastIndexOf('/')) || '/';
 
-// 毫秒 → 人类可读：分钟为最大单位。<1s 保留两位小数，<60s 一位，否则分钟
+// 毫秒 → 人类可读，目标是一眼看出实际花了多久：
+// 秒以下直接给毫秒（小文件原先一律显示 0.00s，等于没有信息），
+// 分钟以上拆成 m/s（原先 341951ms 显示 5.7m，读者还得自己换算成 5 分 42 秒）
 function fmtDuration(ms) {
   if (ms == null || isNaN(ms)) return '—';
-  const s = ms / 1000;
-  if (s < 1)   return s.toFixed(2) + 's';
-  if (s < 60)  return s.toFixed(1) + 's';
-  return (s / 60).toFixed(1) + 'm';
+  if (ms < 1)    return '<1ms';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const total = Math.round(ms / 1000);
+  const s = total % 60, m = Math.floor(total / 60) % 60, h = Math.floor(total / 3600);
+  const pad = v => String(v).padStart(2, '0');
+  return h ? `${h}h${pad(m)}m${pad(s)}s` : `${m}m${pad(s)}s`;
 }
 
 function esc(s) {
