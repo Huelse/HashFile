@@ -307,6 +307,7 @@ window.__sdkReady.then(ctx => {
   _sdk = ctx.sdk;
   pathPick.hidden = false;
   pathWrap.classList.add('has-pick');
+  document.body.classList.add('has-sdk');   // 各表格里的「打开目录」据此显隐
 });
 
 // 系统图标走 fnOS 根路径的 /static/…，脱离宿主（本地直连、独立窗口）会 404，
@@ -436,13 +437,12 @@ async function loadAccess() {
 
   for (const p of paths) {
     const tr = document.createElement('tr');
-    // 「打开目录」依赖 JS SDK，后端探测成功但 SDK 不可用（独立浏览器窗口）时不渲染
     tr.innerHTML = `
       <td class="ht-path" title="${esc(semCache.get(p) || p)}">${esc(semCache.get(p) || p)}</td>
       <td class="acc-real" title="${esc(p)}">${esc(p)}</td>
-      <td class="ht-action col-act">${_sdk ? '<button class="btn-copy acc-open">打开目录</button>' : ''}<button class="btn-copy acc-del">删除</button></td>`;
-    const openBtn = tr.querySelector('.acc-open');
-    if (openBtn) bindOpenDir(openBtn, p);
+      <td class="ht-action col-act">
+        <button class="btn-open" data-p="${esc(p)}">打开目录</button>
+        <button class="btn-copy acc-del">删除</button></td>`;
     bindAccessDelete(tr.querySelector('.acc-del'), p, tr, tbody);
     tbody.appendChild(tr);
   }
@@ -451,19 +451,30 @@ async function loadAccess() {
   accessList.appendChild(table);
 }
 
-// 打开文件管理器并定位到该目录。openFileManager 不需要 api-scope，
-// 但只有宿主环境（isWeb）里才有，故按钮本身就只在 _sdk 可用时才渲染。
-function bindOpenDir(btn, path) {
-  btn.addEventListener('click', async () => {
-    try {
-      await _sdk.openFileManager(path);
-    } catch (e) {
-      console.warn('openFileManager failed:', e);
-      btn.textContent = '打开失败';
-      setTimeout(() => { btn.textContent = '打开目录'; }, 1500);
-    }
+// 打开文件管理器并定位到目标目录。openFileManager 不需要 api-scope，但只有宿主
+// 环境（isWeb）里才有：按钮一律渲染，由 body.has-sdk 控制显隐——渲染时机可能早于
+// SDK 落定（?path= 自动开算），用 CSS 兜住就不必关心先后。
+async function openDir(path, btn) {
+  if (!_sdk) return;
+  try {
+    await _sdk.openFileManager(path);
+  } catch (e) {
+    console.warn('openFileManager failed:', e);
+    btn.textContent = '打开失败';
+    setTimeout(() => { btn.textContent = '打开目录'; }, 1500);
+  }
+}
+
+// 各表格的「打开目录」都走事件委托：目标路径写在 data-p 上（结果/历史是文件的
+// 父目录，已授权目录就是目录本身），避免每行各挂一个监听器
+function delegateOpenDir(container) {
+  container.addEventListener('click', e => {
+    const btn = e.target.closest('.btn-open');
+    if (btn) openDir(btn.dataset.p, btn);
   });
 }
+delegateOpenDir(accessList);
+delegateOpenDir(historyList);
 
 // 删除授权不可撤销（只能重新选一次目录），故要二次确认；3 秒无操作自动复位
 function bindAccessDelete(btn, path, tr, tbody) {
@@ -585,13 +596,12 @@ function renderHistoryList(entries) {
       <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(entry.hash || '—')}</code></td>
       <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-time">${esc(entry.created_at)}</td>
-      <td class="ht-action">${_sdk ? '<button class="btn-copy hist-open">打开目录</button>' : ''}<button class="btn-copy hist-del">删除</button></td>
+      <td class="ht-action">
+        <button class="btn-open" data-p="${esc(dirName(entry.path))}">打开目录</button>
+        <button class="btn-copy hist-del">删除</button></td>
     `;
     bindCopyCell(tr.querySelector('.ht-path'), entry.path);
     if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash);
-    // 历史记录每行是一个文件，定位到它所在的目录
-    const openBtn = tr.querySelector('.hist-open');
-    if (openBtn) bindOpenDir(openBtn, dirName(entry.path));
     tr.querySelector('.hist-del').addEventListener('click', async () => {
       try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
@@ -643,7 +653,8 @@ function renderDupGroups(entries) {
       li.innerHTML = `
         <span class="dup-path ht-copy" title="${esc(e.path)}">${esc(name)}</span>
         <span class="dup-algo">${fmtAlgo(e.algo)}</span>
-        <span class="dup-time">${esc(e.created_at)}</span>`;
+        <span class="dup-time">${esc(e.created_at)}</span>
+        <button class="btn-open" data-p="${esc(dirName(e.path))}">打开目录</button>`;
       bindCopyCell(li.querySelector('.dup-path'), e.path);
       list.appendChild(li);
     }
@@ -724,9 +735,11 @@ function buildRowHTML(r, expected, bucket) {
       : '<td class="col-status"><span class="badge badge-fail">✗ 不匹配</span></td>';
   }
 
+  // 出错的行没有哈希可复制，但仍然可以去目录里看看文件出了什么问题
+  const openBtn = `<button class="btn-open" data-p="${esc(dirName(r.file))}">打开目录</button>`;
   const copyCell = hasError
-    ? '<td class="col-action"></td>'
-    : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
+    ? `<td class="col-action">${openBtn}</td>`
+    : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button>${openBtn}</td>`;
 
   return `<tr${cls}>`
     + `<td class="col-file" title="${esc(semCache.get(r.file) || r.file)}">${esc(baseName(r.file))}</td>`
@@ -838,6 +851,7 @@ resultsBody.addEventListener('click', e => {
   const btn = e.target.closest('.btn-copy');
   if (btn) copyText(btn.dataset.v, btn);
 });
+delegateOpenDir(resultsBody);
 
 // ── Helpers ──────────────────────────────────────────────────
 function bindCopyCell(cell, fullText) {

@@ -390,7 +390,12 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 }
 .err-icon { font-style: normal; }
 
-.btn-copy {
+/* 「打开目录」与复制按钮同款；宿主环境之外没有 openFileManager，整体隐藏 */
+.btn-open { display: none; }
+body.has-sdk .btn-open { display: inline-block; }
+
+.btn-copy,
+.btn-open {
   padding: 3px 9px;
   background: transparent;
   border: 1px solid var(--border);
@@ -400,8 +405,10 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   color: var(--muted);
   transition: border-color .1s, color .1s;
 }
-.btn-copy:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.btn-copy:hover:not(:disabled),
+.btn-open:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .btn-copy:disabled { opacity: .6; }
+.col-action button + button { margin-left: 6px; }
 
 /* History button — no border */
 #history-btn { border-color: transparent; }
@@ -597,6 +604,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 .dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .dup-algo { color: var(--muted); white-space: nowrap; }
 .dup-time { color: var(--muted); font-size: .75rem; white-space: nowrap; }
+body.has-sdk .dup-list .btn-open { flex-shrink: 0; }
 
 /* Pager */
 .modal-footer {
