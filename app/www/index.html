@@ -15,8 +15,21 @@
 
     <section class="card form-card">
       <div class="form-group">
-        <label for="path">文件 / 目录路径</label>
-        <div class="input-wrap">
+        <div class="group-head">
+          <label for="path">文件 / 目录路径</label>
+          <button id="access-btn" class="link-btn" type="button" hidden>已授权目录</button>
+        </div>
+        <div class="input-wrap" id="path-wrap">
+          <button id="path-pick" class="input-pick" type="button" hidden
+                  aria-label="选择文件或目录" aria-haspopup="menu" aria-expanded="false">
+            <!-- 借用系统文件管理器的图标，与 fnOS 桌面观感一致；取不到时回退成 emoji -->
+            <img id="pick-icon" class="pick-icon" src="/static/app/icons/trim.file-manager/icon.png?size=36" alt="">
+            <span class="pick-caret">▾</span>
+          </button>
+          <div id="path-pick-menu" class="pick-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-kind="file">选择文件</button>
+            <button type="button" role="menuitem" data-kind="dir">选择目录</button>
+          </div>
           <input type="text" id="path" placeholder="/vol1/data/example.iso" autocomplete="off" spellcheck="false">
           <button id="path-clear" class="input-clear" type="button" aria-label="清除">✕</button>
         </div>
@@ -116,6 +129,49 @@
     </div>
   </div>
 
+  <!-- 已授权目录 Modal -->
+  <div id="access-overlay" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="access-title">
+      <div class="modal-header">
+        <h2 id="access-title">已授权目录</h2>
+        <button id="access-close" class="btn-icon" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body" id="access-list"></div>
+      <div class="modal-footer">
+        <span class="acc-hint">仅显示你本人授权给本应用的目录；删除后本应用将无法再读取该目录。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- app.js 是同步脚本、先于 module 执行，故在此建好 promise 供其等待。
+       宿主环境探测与 SDK 初始化都在下方 module 里完成，失败也必定 resolve，
+       让前端始终有一条确定的降级路径。 -->
+  <script>
+    window.__sdkReady = new Promise(resolve => { window.__sdkResolve = resolve; });
+  </script>
   <script src="app.js"></script>
+  <script type="module">
+    // fnOS 微应用 SDK：需 manifest 声明 micro_app=true，且系统 ≥1.2.0401。
+    // 不满足时（低版本、独立浏览器窗口）一律降级为 usable:false。
+    const fallback = { sdk: null, usable: false, language: navigator.language || 'zh-CN' };
+    try {
+      const { TrimApp } = await import('./vendor/trim-web-app.js');
+      const sdk = new TrimApp();
+      // 非宿主环境下与宿主的握手不会有应答，ready() 可能一直挂着 —— 加超时兜底，
+      // 保证 __sdkReady 总会落定，前端不会卡在「等 SDK」的中间态
+      let timer;
+      const timeout = new Promise((_, rej) => { timer = setTimeout(rej, 3000); });
+      // race 由 ready() 先落定时这条 rejection 无人接管，会在控制台留下
+      // 「Uncaught (in promise) undefined」，故先挂一个空 catch 再参赛
+      timeout.catch(() => {});
+      await Promise.race([sdk.ready(), timeout]);
+      clearTimeout(timer);
+      let language = fallback.language;
+      try { language = (await sdk.getPlatformConfig())?.language || language; } catch { /* 用浏览器语言兜底 */ }
+      window.__sdkResolve({ sdk, language, usable: sdk.isWeb && !sdk.isStandaloneWeb });
+    } catch {
+      window.__sdkResolve(fallback);
+    }
+  </script>
 </body>
 </html>

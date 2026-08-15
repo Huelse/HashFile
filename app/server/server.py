@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 import threading
 import socketserver
+import traceback
+import http.client
 import concurrent.futures
 from contextlib import closing
 from datetime import datetime
@@ -28,6 +30,15 @@ SOCKET_PATH = os.environ.get("GATEWAY_SOCKET") or (
     os.path.join(os.environ["TRIM_APPDEST"], "app.sock")
     if os.environ.get("TRIM_APPDEST") else None
 )
+
+# fnOS 开放平台后端 API（api-scope）：只能由应用服务端经这个 Unix Socket 调用，
+# 凭 TRIM_API_TOKEN 鉴权。目前用到 trim.file.convertPath（把 /vol1/... 内部路径
+# 转成给用户看的语义化路径）与用户授权目录的查询/删除。任何一步失败都降级：
+# 路径原样显示、授权目录入口不出现，哈希主功能不受影响。
+APISCOPE_SOCKET = os.environ.get("APISCOPE_SOCKET") or "/var/run/trim_open_gateway_apiscope.socket"
+APISCOPE_PATH   = "/api/v1/trimapp"
+APP_NAME        = "HashFile"
+CONVERT_MAX     = 200   # 单次 convertPath 的路径条数上限
 
 # 前四项委托给系统 coreutils 的 *sum 命令（PATH 查找）；
 # blake3 无对应系统命令，故打包静态 b3sum 二进制并以绝对路径引用，
@@ -305,6 +316,166 @@ def _hash_one(f, a, expected, sub_timeout, task):
     return entry
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """http.client 不支持 Unix Socket，只需把建连换成 AF_UNIX，其余 HTTP 逻辑照旧。"""
+
+    def __init__(self, socket_path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout is not None:
+            self.sock.settimeout(self.timeout)
+        self.sock.connect(self._socket_path)
+
+
+_apiscope_warned = set()
+_apiscope_last = None   # 最近一次失败原因，随 convert-path 响应回前端，方便真机排障
+
+
+def _apiscope_warn(msg):
+    # 开放平台不可用属于可降级的场景：同一种失败只记一次，避免刷屏；
+    # 但不同的失败原因要各记一条，否则真机排障时只能看到最早那条。
+    global _apiscope_last
+    _apiscope_last = msg
+    if msg not in _apiscope_warned:
+        _apiscope_warned.add(msg)
+        print(f"HashFile: open-platform API unavailable ({msg}); "
+              f"falling back to raw paths", flush=True)
+
+
+def _trimapp_call(req, data, timeout=3):
+    """调用 fnOS 开放平台后端 API，失败一律返回 None（调用方负责降级）。"""
+    # token 由系统在拉起 cmd/main 时注入，且可能随重装/重新注册更新，
+    # 因此每次都从当前环境读取，绝不缓存或落盘。
+    token = os.environ.get("TRIM_API_TOKEN")
+    if not token:
+        _apiscope_warn("TRIM_API_TOKEN not set")
+        return None
+
+    body = json.dumps({
+        "reqId": uuid.uuid4().hex,
+        "req": req,
+        "appName": APP_NAME,
+        "data": data,
+    }, ensure_ascii=False).encode("utf-8")
+
+    conn = _UnixHTTPConnection(APISCOPE_SOCKET, timeout=timeout)
+    try:
+        conn.request("POST", APISCOPE_PATH, body=body, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Content-Length": str(len(body)),
+        })
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", "replace")
+        if resp.status != 200:
+            _apiscope_warn(f"{req}: HTTP {resp.status} {raw[:200]}")
+            return None
+        payload = json.loads(raw)
+        # 网关返回的结构不做任何假设：非对象一律当失败处理，
+        # 免得后面 .get() 抛异常把整个请求打成 502。
+        if not isinstance(payload, dict):
+            _apiscope_warn(f"{req}: unexpected payload {raw[:200]}")
+            return None
+        if payload.get("code") != 0:
+            _apiscope_warn(f"{req}: code={payload.get('code')} msg={payload.get('msg')}")
+            return None
+        # data 缺席时回 {} 而不是 None，这样 None 严格只表示「调用失败」
+        data = payload.get("data")
+        return {} if data is None else data
+    except Exception as exc:
+        _apiscope_warn(f"{req}: {type(exc).__name__}: {exc}")
+        return None
+    finally:
+        conn.close()
+
+
+def _convert_paths(paths, language):
+    """/vol1/... → 语义化路径。返回 {原路径: 语义路径}；无法转换的键直接缺席。"""
+    data = _trimapp_call("trim.file.convertPath", {"path": paths, "language": language})
+    if isinstance(data, str):
+        # 有的网关实现会把 data 再包一层 JSON 字符串，容错解一次
+        try:
+            data = json.loads(data)
+        except ValueError:
+            data = None
+    # 实测网关直接回结果数组，文档写的是 {status, result}，两种都认
+    if isinstance(data, dict):
+        if data.get("status") not in (0, None):
+            _apiscope_warn(f"convertPath: status={data.get('status')}")
+            return None
+        items = data.get("result")
+    else:
+        items = data
+    if not isinstance(items, list):
+        if data is not None:
+            _apiscope_warn(f"convertPath: unexpected data {str(data)[:200]}")
+        return None
+    out = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        src, sem = item.get("path"), item.get("semanticPath")
+        if src and sem:
+            out[src] = sem
+    return out
+
+
+def _pluck_paths(data):
+    """从网关返回里挖出路径列表；形状对不上返回 None。
+    文档写的是 {"paths": ["/vol1/..."]}，但 convertPath 已经证明实际形状可能与
+    文档不符，故对「裸数组」「换了字段名」「元素是对象」都做容错。"""
+    items = data
+    if isinstance(data, dict):
+        items = data.get("paths")
+        if items is None:   # 字段名对不上时退而求其次：取第一个列表值
+            items = next((v for v in data.values() if isinstance(v, list)), None)
+        if items is None:
+            return []       # 一条授权都没有
+    if not isinstance(items, list):
+        return None
+    out = []
+    for it in items:
+        if isinstance(it, str):
+            out.append(it)
+        elif isinstance(it, dict):
+            v = it.get("path") or it.get("folder") or it.get("dir") or it.get("name")
+            if isinstance(v, str):
+                out.append(v)
+    return out
+
+
+def _user_folders(uid):
+    """查询该用户授权给本应用的目录。返回 (paths|None, 原始 data)。
+    注意只包含目录授权，pickUserFile 选中的单个文件不会出现在这里。"""
+    data = _trimapp_call("trim.file.getUserAccessibleFolders", {"uid": uid})
+    if data is None:
+        return None, None
+    paths = _pluck_paths(data)
+    if paths is None:
+        _apiscope_warn(f"getUserAccessibleFolders: unexpected data {str(data)[:300]}")
+        return None, data
+    if not paths and data not in ({}, [], None):
+        # 有内容却一条都没挖出来，说明字段名又变了：把原始形状记进日志便于对齐
+        _apiscope_warn(f"getUserAccessibleFolders: no path found in {str(data)[:300]}")
+    return paths, data
+
+
+def _del_user_folder(uid, path):
+    """删除该用户的一条目录授权。"""
+    # _trimapp_call 已经把 code≠0 当失败挡掉，这里只在网关明确说了 suc:false 时才判失败
+    # ——data 的具体形状不敢假设（convertPath 就与文档不符）。
+    data = _trimapp_call("trim.file.delUserAccessibleFolder", {"uid": uid, "path": path})
+    if data is None:
+        return False
+    if isinstance(data, dict) and data.get("suc") is False:
+        _apiscope_warn(f"delUserAccessibleFolder: not deleted {str(data)[:200]}")
+        return False
+    return True
+
+
 class HashHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=WWW_DIR, **kwargs)
@@ -313,10 +484,35 @@ class HashHandler(SimpleHTTPRequestHandler):
         # 身份只信任统一网关注入的 X-Trim-Userid，绝不使用客户端自带的 ID。
         return (self.headers.get("X-Trim-Userid") or "").strip()
 
+    def _uid_int(self):
+        # 开放平台的 uid 是数字；拿不到身份（如本地直连调试）时返回 None
+        try:
+            return int(self._uid())
+        except ValueError:
+            return None
+
     def end_headers(self):
         # 静态文件默认无 Cache-Control，浏览器启发式缓存会导致更新包后仍用旧前端
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
+
+    def send_response(self, *args, **kwargs):
+        # 记一个「已应答」标记，_guard 据此决定还能不能再补一个 500
+        self._responded = True
+        super().send_response(*args, **kwargs)
+
+    def _guard(self, fn):
+        """未捕获异常会让 socketserver 直接断开连接，统一网关只能报 502，
+        既没有响应体也没有堆栈可查。这里兜住：堆栈进 info.log，客户端拿 500。"""
+        try:
+            fn()
+        except Exception:
+            traceback.print_exc()
+            if not getattr(self, "_responded", False):
+                try:
+                    self._json({"success": False, "error": "internal error"}, 500)
+                except Exception:
+                    pass
 
     def _normalize_path(self):
         """剥离网关前缀，使经网关（/app/HashFile/...）与直连端口（/...）路由一致。
@@ -336,6 +532,12 @@ class HashHandler(SimpleHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        self._guard(self._route_get)
+
+    def do_DELETE(self):
+        self._guard(self._route_delete)
+
+    def _route_get(self):
         if self._normalize_path():
             return
         parsed = urlparse(self.path)
@@ -345,10 +547,14 @@ class HashHandler(SimpleHTTPRequestHandler):
             self._handle_hash_status(parsed)
         elif parsed.path == "/api/history":
             self._handle_history_list(parsed)
+        elif parsed.path == "/api/convert-path":
+            self._handle_convert_path(parsed)
+        elif parsed.path == "/api/user-access":
+            self._handle_user_access_list(parsed)
         else:
             super().do_GET()
 
-    def do_DELETE(self):
+    def _route_delete(self):
         if self._normalize_path():
             return
         parsed = urlparse(self.path)
@@ -364,6 +570,8 @@ class HashHandler(SimpleHTTPRequestHandler):
                 self._json({"success": True})
             except Exception as exc:
                 self._json({"success": False, "error": str(exc)}, 500)
+        elif parsed.path == "/api/user-access":
+            self._handle_user_access_del(parsed)
         else:
             self.send_response(405)
             self.end_headers()
@@ -470,6 +678,48 @@ class HashHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_convert_path(self, parsed):
+        """把内部路径转成语义化展示路径。前端仅用于显示，失败即降级为原路径，
+        因此任何失败都回 success:false + HTTP 200，不产生前端错误噪音。"""
+        qs = parse_qs(parsed.query)
+        # 去重但保序：同一批结果里重复路径很常见，没必要重复问网关
+        paths = list(dict.fromkeys(p for p in qs.get("path", []) if p.strip()))[:CONVERT_MAX]
+        language = qs.get("language", ["zh-CN"])[0].strip() or "zh-CN"
+        if not paths:
+            return self._json({"success": True, "paths": {}})
+        mapping = _convert_paths(paths, language)
+        if mapping is None:
+            # reason 只是失败原因文本（不含 token），给真机排障用
+            return self._json({"success": False, "paths": {}, "reason": _apiscope_last})
+        self._json({"success": True, "paths": mapping})
+
+    def _handle_user_access_list(self, parsed):
+        """当前用户授权给本应用的目录。uid 只取自网关注入的身份头，
+        前端传什么都不作数，避免越权查看别人的授权列表。"""
+        uid = self._uid_int()
+        if uid is None:
+            return self._json({"success": False, "paths": [], "reason": "no gateway identity"})
+        paths, raw = _user_folders(uid)
+        # ?debug=1 回传所用 uid、网关注入的身份头和平台原样返回的结构，
+        # 用来对齐真机上的实际形状（形状不符与 uid 取错，症状都是列表为空）
+        extra = {}
+        if parse_qs(parsed.query).get("debug"):
+            extra = {"uid": uid, "raw": raw, "headers": {
+                k: v for k, v in self.headers.items() if k.lower().startswith("x-trim")}}
+        if paths is None:
+            return self._json({"success": False, "paths": [], "reason": _apiscope_last, **extra})
+        self._json({"success": True, "paths": paths, **extra})
+
+    def _handle_user_access_del(self, parsed):
+        """删除当前用户的一条目录授权。同样以网关身份为准。"""
+        uid = self._uid_int()
+        path = parse_qs(parsed.query).get("path", [""])[0]
+        if uid is None or not path:
+            return self._json({"success": False, "error": "uid/path required"}, 400)
+        if not _del_user_folder(uid, path):
+            return self._json({"success": False, "reason": _apiscope_last})
+        self._json({"success": True})
 
     def _handle_history_list(self, parsed):
         qs = parse_qs(parsed.query)

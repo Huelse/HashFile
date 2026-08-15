@@ -51,13 +51,34 @@ header h1 { font-size: 1.375rem; font-weight: 700; letter-spacing: -.3px; }
 .form-group { margin-bottom: 14px; }
 .form-group:last-child { margin-bottom: 0; }
 
-.form-group > label:not(.checkbox-label) {
+.form-group > label:not(.checkbox-label),
+.group-head > label {
   display: block;
   font-size: .8125rem;
   font-weight: 500;
   color: var(--muted);
   margin-bottom: 5px;
 }
+
+/* 标题行：左边是标签，右边挂一个文本按钮（间距交给这一行，标签自己不再留下边距） */
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+.group-head > label { margin-bottom: 0; }
+
+.link-btn {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: .8125rem;
+  color: var(--primary);
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
 
 .form-group input[type="text"],
 .form-group select {
@@ -108,6 +129,61 @@ header h1 { font-size: 1.375rem; font-weight: 700; letter-spacing: -.3px; }
 }
 .input-clear:hover { color: var(--text); background: var(--bg); }
 .input-wrap.is-empty .input-clear { display: none; }
+
+/* Leading picker button — only when the fnOS SDK is usable (has-pick) */
+.input-wrap.has-pick input[type="text"] { padding-left: 44px; }
+.input-pick {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 5px 4px;
+  border-radius: 4px;
+  transition: color .12s, background .12s;
+  z-index: 1;
+}
+.input-pick:hover { color: var(--text); background: var(--bg); }
+/* 图标是系统 png（回退时是 emoji span），两种情况都按 18px 排版 */
+.input-pick .pick-icon { width: 18px; height: 18px; font-size: .95rem; line-height: 1; display: block; object-fit: contain; }
+.input-pick .pick-caret { font-size: .6rem; }
+
+.pick-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, .12);
+}
+.pick-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font-size: .8125rem;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.pick-menu button:hover { background: var(--bg); }
+
+/* 失焦时展示的语义化路径：淡一档，提示这不是可直接复制的真实路径 */
+#path.is-semantic { color: var(--muted); }
 
 .form-row {
   display: flex;
@@ -447,8 +523,21 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 .ht-time  { color: var(--muted); font-size: .75rem; white-space: nowrap; }
 .ht-path  { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .ht-algo  { color: var(--muted); white-space: nowrap; }
-.ht-hash code { font-family: var(--mono); font-size: .75rem; }
+/* 哈希值原样渲染，靠样式做溢出省略；完整值在 title 里，点击复制的也是完整值 */
+.ht-hash code {
+  font-family: var(--mono);
+  font-size: .75rem;
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ht-action { white-space: nowrap; }
+
+/* 已授权目录：整行就一个路径，不像历史记录那样要挤下 6 列，放开宽度限制 */
+.acc-table .ht-path { max-width: none; word-break: break-all; white-space: normal; }
+.acc-hint { color: var(--muted); font-size: .75rem; line-height: 1.5; }
 
 .ht-copy { cursor: pointer; transition: color .1s; }
 .ht-copy:hover { color: var(--primary); }
@@ -471,8 +560,18 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   border-bottom: 1px solid var(--border);
   font-size: .8125rem;
 }
-.dup-head code { font-family: var(--mono); font-size: .75rem; color: var(--text); }
-.dup-count { color: var(--muted); font-size: .75rem; }
+/* 同上：哈希占满剩余宽度，超出省略，右侧计数不被挤压 */
+.dup-head code {
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dup-count { color: var(--muted); font-size: .75rem; flex-shrink: 0; }
 .dup-list { list-style: none; margin: 0; padding: 4px 0; }
 .dup-list li {
   display: flex;
