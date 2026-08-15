@@ -51,13 +51,34 @@ header h1 { font-size: 1.375rem; font-weight: 700; letter-spacing: -.3px; }
 .form-group { margin-bottom: 14px; }
 .form-group:last-child { margin-bottom: 0; }
 
-.form-group > label:not(.checkbox-label) {
+.form-group > label:not(.checkbox-label),
+.group-head > label {
   display: block;
   font-size: .8125rem;
   font-weight: 500;
   color: var(--muted);
   margin-bottom: 5px;
 }
+
+/* 标题行：左边是标签，右边挂一个文本按钮（间距交给这一行，标签自己不再留下边距） */
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+.group-head > label { margin-bottom: 0; }
+
+.link-btn {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: .8125rem;
+  color: var(--primary);
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
 
 .form-group input[type="text"],
 .form-group select {
@@ -108,6 +129,61 @@ header h1 { font-size: 1.375rem; font-weight: 700; letter-spacing: -.3px; }
 }
 .input-clear:hover { color: var(--text); background: var(--bg); }
 .input-wrap.is-empty .input-clear { display: none; }
+
+/* Leading picker button — only when the fnOS SDK is usable (has-pick) */
+.input-wrap.has-pick input[type="text"] { padding-left: 44px; }
+.input-pick {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 5px 4px;
+  border-radius: 4px;
+  transition: color .12s, background .12s;
+  z-index: 1;
+}
+.input-pick:hover { color: var(--text); background: var(--bg); }
+/* 图标是系统 png（回退时是 emoji span），两种情况都按 18px 排版 */
+.input-pick .pick-icon { width: 18px; height: 18px; font-size: .95rem; line-height: 1; display: block; object-fit: contain; }
+.input-pick .pick-caret { font-size: .6rem; }
+
+.pick-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, .12);
+}
+.pick-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font-size: .8125rem;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.pick-menu button:hover { background: var(--bg); }
+
+/* 失焦时展示的语义化路径：淡一档，提示这不是可直接复制的真实路径 */
+#path.is-semantic { color: var(--muted); }
 
 .form-row {
   display: flex;
@@ -291,7 +367,10 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   color: var(--text);
 }
 .col-status { white-space: nowrap; }
-.col-action { white-space: nowrap; }
+/* 定宽：复制按钮点完会变成「已复制」，不定宽整表每次点击都跟着抖。
+   「打开目录」在非宿主环境是 display:none，那时只留复制按钮的宽度 */
+.col-action { white-space: nowrap; width: 90px; }
+body.has-sdk .col-action { width: 166px; }
 
 .badge {
   display: inline-flex;
@@ -314,7 +393,12 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 }
 .err-icon { font-style: normal; }
 
-.btn-copy {
+/* 「打开目录」与复制按钮同款；宿主环境之外没有 openFileManager，整体隐藏 */
+.btn-open { display: none; }
+body.has-sdk .btn-open { display: inline-block; }
+
+.btn-copy,
+.btn-open {
   padding: 3px 9px;
   background: transparent;
   border: 1px solid var(--border);
@@ -324,8 +408,12 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   color: var(--muted);
   transition: border-color .1s, color .1s;
 }
-.btn-copy:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.btn-copy:hover:not(:disabled),
+.btn-open:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .btn-copy:disabled { opacity: .6; }
+/* 间距只在「打开目录」真的显示时才需要：它被隐藏时相邻选择器仍然成立，
+   不加 has-sdk 限定会给剩下那个按钮留一段无来由的左边距 */
+body.has-sdk .col-action button + button { margin-left: 6px; }
 
 /* History button — no border */
 #history-btn { border-color: transparent; }
@@ -447,8 +535,41 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 .ht-time  { color: var(--muted); font-size: .75rem; white-space: nowrap; }
 .ht-path  { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .ht-algo  { color: var(--muted); white-space: nowrap; }
-.ht-hash code { font-family: var(--mono); font-size: .75rem; }
+/* 哈希值原样渲染，靠样式做溢出省略；完整值在 title 里，点击复制的也是完整值 */
+.ht-hash code {
+  font-family: var(--mono);
+  font-size: .75rem;
+  display: block;
+  /* 860px 宽的弹窗里，其余五列约占 630px；再宽就会顶出横向滚动条 */
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ht-action { white-space: nowrap; }
+
+/* 已授权目录：语义化路径 + 实际路径 + 操作，两列路径各自省略号截断 */
+.acc-table .ht-path { max-width: 240px; }
+.acc-table .acc-real {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--muted);
+}
+/* 操作列定宽：删除按钮会在「删除 / 确认删除」之间切换，不定宽整表会跟着抖 */
+.acc-table .col-act { width: 170px; white-space: nowrap; }
+body.has-sdk .hist-table .ht-action button + button { margin-left: 6px; }
+/* 二次确认态标红：再点一下授权就真的没了。hover 规则的选择器更具体，
+   否则会被 .btn-copy:hover 的主色盖掉 */
+.acc-del[data-confirm="1"],
+.acc-del[data-confirm="1"]:hover:not(:disabled) {
+  border-color: var(--fail);
+  color: var(--fail);
+}
+.acc-hint { color: var(--muted); font-size: .75rem; line-height: 1.5; }
 
 .ht-copy { cursor: pointer; transition: color .1s; }
 .ht-copy:hover { color: var(--primary); }
@@ -471,8 +592,18 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   border-bottom: 1px solid var(--border);
   font-size: .8125rem;
 }
-.dup-head code { font-family: var(--mono); font-size: .75rem; color: var(--text); }
-.dup-count { color: var(--muted); font-size: .75rem; }
+/* 同上：哈希占满剩余宽度，超出省略，右侧计数不被挤压 */
+.dup-head code {
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dup-count { color: var(--muted); font-size: .75rem; flex-shrink: 0; }
 .dup-list { list-style: none; margin: 0; padding: 4px 0; }
 .dup-list li {
   display: flex;
@@ -486,6 +617,7 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
 .dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .dup-algo { color: var(--muted); white-space: nowrap; }
 .dup-time { color: var(--muted); font-size: .75rem; white-space: nowrap; }
+body.has-sdk .dup-list .btn-open { flex-shrink: 0; }
 
 /* Pager */
 .modal-footer {

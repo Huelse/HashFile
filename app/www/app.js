@@ -8,6 +8,9 @@ const _initPath = new URLSearchParams(window.location.search).get('path');
 if (_initPath) $('path').value = _initPath;
 
 const pathInput      = $('path');
+const pathWrap       = $('path-wrap');
+const pathPick       = $('path-pick');
+const pathPickMenu   = $('path-pick-menu');
 const recursiveChk   = $('recursive');
 const expectedInput  = $('expected');
 const timeoutSel     = $('timeout-sel');
@@ -86,7 +89,7 @@ pathInput.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
 
 async function run() {
   if (activeController) return;  // 已有任务进行中（回车键不受 submitBtn.disabled 约束）
-  const path = pathInput.value.trim();
+  const path = realPath.trim();  // 输入框失焦时显示的是语义化路径，真实路径只认 realPath
   if (!path) { showError('请输入文件或目录路径'); return; }
 
   const algos = getSelectedAlgos();
@@ -153,7 +156,11 @@ async function pollTask(id, signal, onProgress) {
       failures = 0;
     } catch (e) {
       if (e.name === 'AbortError' || ++failures >= 3) throw e;
-      continue;  // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃
+      // 长任务轮询次数多，容忍偶发网络抖动，连续 3 次失败才放弃。
+      // delay 可能刚被 more 分支置 0（见下），重试前必须抬回来，
+      // 否则网络一抖就是零间隔连打三次。
+      delay = Math.max(delay, 1000);
+      continue;
     }
     if (!d.success) return { status: 'error', error: d.error || '查询任务状态失败' };
     // 运行中即时合并已完成的结果并渲染，让用户不必等全部算完才看到
@@ -184,12 +191,322 @@ function setupInputClear(input, onClear) {
   const btn = wrap.querySelector('.input-clear');
   const sync = () => wrap.classList.toggle('is-empty', !input.value);
   input.addEventListener('input', sync);
-  btn.addEventListener('click', () => { input.value = ''; input.focus(); sync(); onClear && onClear(); });
+  // onClear 先于 sync：路径框的回调会连带复位真实路径与展示态，sync 需要看到最终值
+  btn.addEventListener('click', () => { input.value = ''; input.focus(); onClear && onClear(); sync(); });
   sync();
 }
-setupInputClear(pathInput);                                  // 路径
+setupInputClear(pathInput, () => {                           // 路径：真实值与展示态一并复位
+  realPath = '';
+  pathInput.value = '';
+  pathInput.classList.remove('is-semantic');
+});
 setupInputClear(expectedInput, () => { if (state.size > 0) renderFromState(); });  // 校验值：清空后重新渲染
 setupInputClear(historySearch, () => doHistorySearch());     // 历史搜索：清空即重新搜索
+
+// ── 语义化路径 ───────────────────────────────────────────────
+// fnOS 要求应用不要直接展示 /vol1/... 内部路径。convertPath 只有后端 API，
+// 故经 /api/convert-path 代理。真实路径始终是 realPath，输入框里的值只是展示。
+const semCache = new Map();          // 真实路径 → 语义化路径（null = 已确认无法转换）
+const CONVERT_BATCH = 50;            // 单次请求的路径数：GET 查询串不宜过长
+let semLanguage = navigator.language || 'zh-CN';
+let semDisabled = false;             // 开放平台不可用（低版本 / 无 token）后整页停止尝试
+
+async function convertPaths(paths) {
+  if (semDisabled || paths.length === 0) return;
+  // 等 SDK 落定再发请求，否则 ?path= 入口的首次转换会赶在平台语言拿到之前，
+  // 用浏览器语言转出与界面不一致的路径文案（await undefined 也是安全的）
+  await window.__sdkReady;
+  if (semDisabled) return;
+  const params = new URLSearchParams();
+  for (const p of paths) params.append('path', p);
+  params.set('language', semLanguage);
+  try {
+    const res = await fetch('api/convert-path?' + params);
+    // 网关层的失败（应用未起来、502 等）拿不到 JSON，单独报一下便于真机排障
+    if (!res.ok) { semDisabled = true; console.warn('convert-path HTTP ' + res.status); return; }
+    const d = await res.json();
+    if (!d.success) { semDisabled = true; console.warn('convert-path unavailable:', d.reason || ''); return; }
+    // 没回传的路径记 null，避免对同一路径反复发请求
+    for (const p of paths) semCache.set(p, d.paths[p] || null);
+  } catch (e) {
+    semDisabled = true;
+    console.warn('convert-path failed:', e);
+  }
+}
+
+// ── 路径输入框：失焦显示语义化路径，聚焦显示真实路径 ─────────
+let realPath = _initPath || '';
+let _semSeq = 0;
+
+pathInput.addEventListener('focus', () => {
+  if (!pathInput.classList.contains('is-semantic')) return;
+  pathInput.classList.remove('is-semantic');
+  pathInput.value = realPath;
+});
+
+pathInput.addEventListener('input', () => { realPath = pathInput.value; });
+
+pathInput.addEventListener('blur', showSemantic);
+
+async function showSemantic() {
+  const p = realPath.trim();
+  if (!p) return;
+  const seq = ++_semSeq;
+  if (!semCache.has(p)) await convertPaths([p]);
+  const sem = semCache.get(p);
+  // 请求返回时用户可能已重新聚焦或改了路径：状态变了就丢弃这次结果
+  if (seq !== _semSeq || !sem || document.activeElement === pathInput || realPath.trim() !== p) return;
+  pathInput.value = sem;
+  pathInput.classList.add('is-semantic');
+}
+
+// 由选择器写回路径：派发 input 事件复用 setupInputClear 的空值同步与上面的 realPath 更新
+function setPath(p) {
+  pathInput.classList.remove('is-semantic');
+  pathInput.value = p;
+  pathInput.dispatchEvent(new Event('input'));
+  showSemantic();
+}
+
+// ── 结果表格的文件列 tooltip ─────────────────────────────────
+// 转换是异步的，拿到后只改已渲染行的 title 属性，不重绘表格，
+// 保持增量渲染「单轮开销只与新增条数有关」的特性。
+let _semPending = new Set();
+let _semTimer = null;
+
+function queueConvert(files) {
+  if (semDisabled) return;
+  for (const f of files) if (!semCache.has(f)) _semPending.add(f);
+  scheduleConvert();
+}
+
+function scheduleConvert() {
+  if (semDisabled || _semTimer || _semPending.size === 0) return;
+  // 短去抖：大目录递归时结果分片密集到达，逐片请求没有意义
+  _semTimer = setTimeout(async () => {
+    _semTimer = null;
+    const all = [..._semPending];
+    _semPending = new Set(all.slice(CONVERT_BATCH));
+    await convertPaths(all.slice(0, CONVERT_BATCH));
+    applyRowTitles();
+    scheduleConvert();
+  }, 300);
+}
+
+function applyRowTitles() {
+  const cells = resultsBody.children;
+  const n = Math.min(renderedRows.length, cells.length);
+  for (let i = 0; i < n; i++) {
+    const sem = semCache.get(renderedRows[i].file);
+    if (sem) cells[i].firstElementChild.title = sem;
+  }
+}
+
+// ── fnOS 文件选择器 ──────────────────────────────────────────
+let _sdk = null;
+
+window.__sdkReady.then(ctx => {
+  if (ctx.language) semLanguage = ctx.language;
+  if (!ctx.usable) return;   // 低版本系统或独立浏览器窗口：不显示按钮，路径仍可手输
+  _sdk = ctx.sdk;
+  pathPick.hidden = false;
+  pathWrap.classList.add('has-pick');
+  document.body.classList.add('has-sdk');   // 各表格里的「打开目录」据此显隐
+});
+
+// 系统图标走 fnOS 根路径的 /static/…，脱离宿主（本地直连、独立窗口）会 404，
+// 这时换回 emoji，免得留一个破图标
+$('pick-icon').addEventListener('error', function () {
+  const span = document.createElement('span');
+  span.className = 'pick-icon';
+  span.textContent = '🗂';
+  this.replaceWith(span);
+});
+
+function closePickMenu() {
+  pathPickMenu.hidden = true;
+  pathPick.setAttribute('aria-expanded', 'false');
+}
+
+pathPick.addEventListener('click', e => {
+  e.stopPropagation();
+  const open = pathPickMenu.hidden;
+  pathPickMenu.hidden = !open;
+  pathPick.setAttribute('aria-expanded', String(open));
+});
+
+document.addEventListener('click', e => {
+  if (!pathPickMenu.hidden && !pathPickMenu.contains(e.target)) closePickMenu();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !pathPickMenu.hidden) closePickMenu();
+});
+
+pathPickMenu.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-kind]');
+  if (btn) pickPath(btn.dataset.kind === 'dir');
+});
+
+async function pickPath(directory) {
+  closePickMenu();
+  if (!_sdk) return;
+  try {
+    // 选择完成后系统会自动把该路径授权给本应用。目录只支持单选，
+    // 文件也限定单选：输入框只承载一个路径。
+    const res = await _sdk.pickUserFile({
+      directory,
+      multiple: false,
+      title: directory ? '选择目录' : '选择文件',
+      okText: '确认授权',
+      sidebarGroup: ['myFiles', 'otherShare', 'external', 'remote', 'favorites', 'team'],
+    });
+    // 用户关掉授权弹窗时，宿主回的是 undefined 或 code≠0 + 通用文案
+    // （"Operation failed"），与真正的失败无从区分，一律静默处理，
+    // 不往错误框里塞看不懂的提示。文档给的用法也是只认 data 有没有路径。
+    const picked = res && res.data && res.data[0];
+    if (!picked) { console.warn('pickUserFile:', res); return; }
+    clearError();
+    setPath(picked);
+    refreshAccessIfOpen();
+  } catch (e) {
+    console.warn('pickUserFile failed:', e);   // 关闭弹窗也可能以 reject 形式回来
+  }
+}
+
+// ── 已授权目录 ───────────────────────────────────────────────
+// 目录授权由 pickUserFile 写入，可经后端 getUserAccessibleFolders 按 uid 查询、
+// delUserAccessibleFolder 删除。uid 由服务端从网关注入的身份头取，前端不传。
+const accessBtn     = $('access-btn');
+const accessOverlay = $('access-overlay');
+const accessList    = $('access-list');
+const accessClose   = $('access-close');
+
+// 探一次：只有真的取得到列表（系统版本够、scope 已授予）才显示入口
+fetch('api/user-access')
+  .then(r => r.json())
+  .then(d => { if (d.success) accessBtn.hidden = false; })
+  .catch(() => { /* 不支持就不显示入口 */ });
+
+accessBtn.addEventListener('click', openAccess);
+accessClose.addEventListener('click', closeAccess);
+accessOverlay.addEventListener('click', e => { if (e.target === accessOverlay) closeAccess(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !accessOverlay.hidden) closeAccess(); });
+
+function openAccess() {
+  accessOverlay.hidden = false;
+  loadAccess();
+}
+
+function closeAccess() {
+  accessOverlay.hidden = true;
+}
+
+// 选完目录就多了一条授权，弹窗开着的话顺手刷新
+function refreshAccessIfOpen() {
+  if (!accessOverlay.hidden) loadAccess();
+}
+
+async function loadAccess() {
+  accessList.innerHTML = '<p class="hist-empty">加载中…</p>';
+  let paths;
+  try {
+    const res = await fetch('api/user-access');
+    const d = await res.json();
+    if (!d.success) {
+      accessList.innerHTML = '<p class="hist-empty">当前系统不支持查询授权目录</p>';
+      console.warn('user-access unavailable:', d.reason || '');
+      return;
+    }
+    paths = d.paths;
+  } catch {
+    accessList.innerHTML = '<p class="hist-empty">加载失败</p>';
+    return;
+  }
+
+  if (paths.length === 0) {
+    accessList.innerHTML = '<p class="hist-empty">暂无已授权目录，可用路径框左侧的按钮选择目录完成授权</p>';
+    return;
+  }
+
+  const missing = paths.filter(p => !semCache.has(p));
+  for (let i = 0; i < missing.length; i += CONVERT_BATCH) {
+    await convertPaths(missing.slice(i, i + CONVERT_BATCH));
+  }
+
+  const table = document.createElement('table');
+  table.className = 'hist-table acc-table';
+  table.innerHTML = '<thead><tr><th>目录</th><th>实际路径</th><th class="col-act">操作</th></tr>'
+                  + '</thead><tbody></tbody>';
+  const tbody = table.querySelector('tbody');
+
+  for (const p of paths) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="ht-path" title="${esc(semCache.get(p) || p)}">${esc(semCache.get(p) || p)}</td>
+      <td class="acc-real" title="${esc(p)}">${esc(p)}</td>
+      <td class="ht-action col-act">
+        <button class="btn-open" data-p="${esc(p)}">打开目录</button>
+        <button class="btn-copy acc-del">删除</button></td>`;
+    bindAccessDelete(tr.querySelector('.acc-del'), p, tr, tbody);
+    tbody.appendChild(tr);
+  }
+
+  accessList.innerHTML = '';
+  accessList.appendChild(table);
+}
+
+// 打开文件管理器并定位到目标目录。openFileManager 不需要 api-scope，但只有宿主
+// 环境（isWeb）里才有：按钮一律渲染，由 body.has-sdk 控制显隐——渲染时机可能早于
+// SDK 落定（?path= 自动开算），用 CSS 兜住就不必关心先后。
+async function openDir(path, btn) {
+  if (!_sdk) return;
+  try {
+    await _sdk.openFileManager(path);
+  } catch (e) {
+    console.warn('openFileManager failed:', e);
+    btn.textContent = '打开失败';
+    setTimeout(() => { btn.textContent = '打开目录'; }, 1500);
+  }
+}
+
+// 各表格的「打开目录」都走事件委托：目标路径写在 data-p 上（结果/历史是文件的
+// 父目录，已授权目录就是目录本身），避免每行各挂一个监听器
+function delegateOpenDir(container) {
+  container.addEventListener('click', e => {
+    const btn = e.target.closest('.btn-open');
+    if (btn) openDir(btn.dataset.p, btn);
+  });
+}
+delegateOpenDir(accessList);
+delegateOpenDir(historyList);
+
+// 删除授权不可撤销（只能重新选一次目录），故要二次确认；3 秒无操作自动复位
+function bindAccessDelete(btn, path, tr, tbody) {
+  btn.addEventListener('click', async () => {
+    if (!btn.dataset.confirm) {
+      btn.dataset.confirm = '1';
+      btn.textContent = '确认删除';
+      btn._t = setTimeout(() => { btn.dataset.confirm = ''; btn.textContent = '删除'; }, 3000);
+      return;
+    }
+    clearTimeout(btn._t);
+    btn.disabled = true;
+    let ok = false;
+    try {
+      const res = await fetch('api/user-access?path=' + encodeURIComponent(path), { method: 'DELETE' });
+      ok = (await res.json()).success;
+    } catch { /* 下面统一按失败处理 */ }
+    if (!ok) {
+      btn.disabled = false;
+      btn.dataset.confirm = '';
+      btn.textContent = '删除失败';
+      setTimeout(() => { btn.textContent = '删除'; }, 1500);
+      return;
+    }
+    tr.remove();
+    if (!tbody.querySelector('tr')) loadAccess();
+  });
+}
 
 // ── History ──────────────────────────────────────────────────
 let _hPage = 1;
@@ -276,17 +593,19 @@ function renderHistoryList(entries) {
   for (const entry of entries) {
     const tr = document.createElement('tr');
     const name = baseName(entry.path);
-    const hshort = hashShort(entry.hash);
+    // 哈希值原样输出，截断交给 CSS（.ht-hash code 做溢出省略），复制到的仍是完整值
     tr.innerHTML = `
       <td class="ht-path ht-copy" title="${esc(entry.path)}">${esc(name)}</td>
       <td class="ht-algo">${fmtAlgo(entry.algo)}</td>
-      <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(hshort)}</code></td>
+      <td class="ht-hash ht-copy" title="${esc(entry.hash || '')}"><code>${esc(entry.hash || '—')}</code></td>
       <td class="ht-time">${fmtDuration(entry.elapsed_ms)}</td>
       <td class="ht-time">${esc(entry.created_at)}</td>
-      <td class="ht-action"><button class="btn-copy hist-del">删除</button></td>
+      <td class="ht-action">
+        <button class="btn-open" data-p="${esc(dirName(entry.path))}">打开目录</button>
+        <button class="btn-copy hist-del">删除</button></td>
     `;
-    bindCopyCell(tr.querySelector('.ht-path'), entry.path, name);
-    if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash, hshort);
+    bindCopyCell(tr.querySelector('.ht-path'), entry.path);
+    if (entry.hash) bindCopyCell(tr.querySelector('.ht-hash'), entry.hash);
     tr.querySelector('.hist-del').addEventListener('click', async () => {
       try { await fetch(`api/history?id=${entry.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
       tr.remove();
@@ -323,12 +642,11 @@ function renderDupGroups(entries) {
   for (const g of groups) {
     const block = document.createElement('div');
     block.className = 'dup-group';
-    const hshort = g.hash.slice(0, 16) + '…';
     const head = document.createElement('div');
     head.className = 'dup-head ht-copy';
     head.title = g.hash;
-    head.innerHTML = `<code>${esc(hshort)}</code> <span class="dup-count">${g.files.length} 个文件</span>`;
-    bindCopyCell(head, g.hash, hshort);
+    head.innerHTML = `<code>${esc(g.hash)}</code> <span class="dup-count">${g.files.length} 个文件</span>`;
+    bindCopyCell(head, g.hash);
     block.appendChild(head);
 
     const list = document.createElement('ul');
@@ -339,8 +657,9 @@ function renderDupGroups(entries) {
       li.innerHTML = `
         <span class="dup-path ht-copy" title="${esc(e.path)}">${esc(name)}</span>
         <span class="dup-algo">${fmtAlgo(e.algo)}</span>
-        <span class="dup-time">${esc(e.created_at)}</span>`;
-      bindCopyCell(li.querySelector('.dup-path'), e.path, name);
+        <span class="dup-time">${esc(e.created_at)}</span>
+        <button class="btn-open" data-p="${esc(dirName(e.path))}">打开目录</button>`;
+      bindCopyCell(li.querySelector('.dup-path'), e.path);
       list.appendChild(li);
     }
     block.appendChild(list);
@@ -420,12 +739,14 @@ function buildRowHTML(r, expected, bucket) {
       : '<td class="col-status"><span class="badge badge-fail">✗ 不匹配</span></td>';
   }
 
+  // 出错的行没有哈希可复制，但仍然可以去目录里看看文件出了什么问题
+  const openBtn = `<button class="btn-open" data-p="${esc(dirName(r.file))}">打开目录</button>`;
   const copyCell = hasError
-    ? '<td class="col-action"></td>'
-    : `<td class="col-action"><button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
+    ? `<td class="col-action">${openBtn}</td>`
+    : `<td class="col-action">${openBtn}<button class="btn-copy" data-v="${esc(r.hash)}">复制</button></td>`;
 
   return `<tr${cls}>`
-    + `<td class="col-file" title="${esc(r.file)}">${esc(baseName(r.file))}</td>`
+    + `<td class="col-file" title="${esc(semCache.get(r.file) || r.file)}">${esc(baseName(r.file))}</td>`
     + `<td class="col-algo">${fmtAlgo(r.algo)}</td>`
     + hashCell
     + `<td class="col-time">${fmtDuration(r.elapsed_ms)}</td>`
@@ -485,6 +806,7 @@ function renderNewRows(entries) {
   }
 
   thStatus.style.display = expected ? '' : 'none';
+  queueConvert(batch.map(r => r.file));
   updateSummary();
   resultsEl.hidden = false;
 }
@@ -511,6 +833,7 @@ function renderFromState() {
   }
   resultsBody.innerHTML = html.join('');  // 一次解析，替代逐行 appendChild
 
+  queueConvert(rows.map(r => r.file));
   updateSummary();
   resultsEl.hidden = false;
 }
@@ -532,9 +855,10 @@ resultsBody.addEventListener('click', e => {
   const btn = e.target.closest('.btn-copy');
   if (btn) copyText(btn.dataset.v, btn);
 });
+delegateOpenDir(resultsBody);
 
 // ── Helpers ──────────────────────────────────────────────────
-function bindCopyCell(cell, fullText, shortText) {
+function bindCopyCell(cell, fullText) {
   cell.addEventListener('click', () => {
     const done = () => {
       cell.classList.add('ht-copied');
@@ -569,17 +893,22 @@ function fmtAlgo(a) {
   return a === 'md5' ? 'MD5' : a.replace(/^sha(\d+)$/, 'SHA-$1').toUpperCase();
 }
 
-// 取路径的末段作为文件名；哈希截短显示
+// 取路径的末段作为文件名；取前段作为所在目录（根目录下的文件回 /）
 const baseName = p => p.split('/').pop() || p;
-const hashShort = h => h ? h.slice(0, 16) + '…' : '—';
+const dirName  = p => p.slice(0, p.lastIndexOf('/')) || '/';
 
-// 毫秒 → 人类可读：分钟为最大单位。<1s 保留两位小数，<60s 一位，否则分钟
+// 毫秒 → 人类可读，目标是一眼看出实际花了多久：
+// 秒以下直接给毫秒（小文件原先一律显示 0.00s，等于没有信息），
+// 分钟以上拆成 m/s（原先 341951ms 显示 5.7m，读者还得自己换算成 5 分 42 秒）
 function fmtDuration(ms) {
   if (ms == null || isNaN(ms)) return '—';
-  const s = ms / 1000;
-  if (s < 1)   return s.toFixed(2) + 's';
-  if (s < 60)  return s.toFixed(1) + 's';
-  return (s / 60).toFixed(1) + 'm';
+  if (ms < 1)    return '<1ms';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const total = Math.round(ms / 1000);
+  const s = total % 60, m = Math.floor(total / 60) % 60, h = Math.floor(total / 3600);
+  const pad = v => String(v).padStart(2, '0');
+  return h ? `${h}h${pad(m)}m${pad(s)}s` : `${m}m${pad(s)}s`;
 }
 
 function esc(s) {
@@ -612,7 +941,7 @@ function fallbackCopy(text, btn, done) {
 
 // ── Auto-run ─────────────────────────────────────────────────
 // 由文件管理器"用 HashFile 打开"带 ?path= 进入时自动开算
-if (_initPath) run();
+if (_initPath) { showSemantic(); run(); }
 
 function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
 function clearError()   { errorBox.hidden = true; }

@@ -3,6 +3,11 @@
 LOG_FILE="${TRIM_PKGVAR}/info.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
 
+# TRIM_PKGVAR 由 fnOS 注入；万一没有，也别把日志静默写到 /info.log 去。
+# :? 的报错要留在 stderr 上可见，只把 mkdir 自己的噪音吞掉。
+: "${TRIM_PKGVAR:?TRIM_PKGVAR is not set}"
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null
+
 # write the command to start your program here
 CMD="python3 ${TRIM_APPDEST}/server/server.py"
 
@@ -22,11 +27,22 @@ start_process() {
     fi
 
     # run cmd to start process
-    bash -c "${CMD}" >> ${LOG_FILE} 2>&1 &
-    # write pid to pidfile
-    printf "%s" "$!" > ${PID_FILE}
-    # log_msg "CMD = ${CMD}"
-    # log_msg "pid = $!"
+    # exec 掉包装 shell：不加的话 $! 是 bash 的 pid，bash 未必会把自己换成
+    # python（只是常见优化，不是保证），那样 stop 就只杀到包装进程，
+    # 真正占着 socket 的 python 会被孤儿化，下次 start 绑不上端口
+    bash -c "exec ${CMD}" >> "${LOG_FILE}" 2>&1 &
+    local pid=$!
+    printf "%s" "${pid}" > "${PID_FILE}"
+
+    # 拉起 ≠ 起来了：server.py 可能立刻退出（socket 未配置、绑定失败…）。
+    # 不确认的话 fnOS 会显示"已启动"，用户只看到一个打不开的应用。
+    sleep 1
+    if ! check_process "${pid}"; then
+        log_msg "ERROR: process exited immediately after start; see ${LOG_FILE}"
+        rm -f "${PID_FILE}"
+        return 1
+    fi
+    log_msg "started (pid=${pid})"
     return 0
 }
 
@@ -58,9 +74,17 @@ stop_process() {
             log_msg "send KILL signal to PID:${pid}..."
             kill -KILL "${pid}"
             sleep 1
+            # KILL 之后还活着说明真的停不下来：如实上报，并且**保留** pidfile，
+            # 否则就再也追踪不到那个还占着 socket 的进程了
+            if check_process "${pid}"; then
+                log_msg "ERROR: process ${pid} survived SIGKILL"
+                return 1
+            fi
             rm -f "${PID_FILE}"
         else
             log_msg "process killed... "
+            # 干净停止后同样要清掉 pidfile，否则要等到下次 status 才被回收
+            rm -f "${PID_FILE}"
         fi
     fi
 
@@ -93,11 +117,11 @@ status() {
 case $1 in
 start)
     # run start command. exit 0 if success, exit 1 if failed
-    start_process
+    start_process || exit 1
     ;;
 stop)
     # run stop command. exit 0 if success, exit 1 if failed
-    stop_process
+    stop_process || exit 1
     ;;
 status)
     # check application status command. exit 0 if running, exit 3 if not running
