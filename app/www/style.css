@@ -367,7 +367,10 @@ tbody td { padding: 9px 16px; vertical-align: middle; }
   color: var(--text);
 }
 .col-status { white-space: nowrap; }
-.col-action { white-space: nowrap; }
+/* 定宽：复制按钮点完会变成「已复制」，不定宽整表每次点击都跟着抖。
+   「打开目录」在非宿主环境是 display:none，那时只留复制按钮的宽度 */
+.col-action { white-space: nowrap; width: 90px; }
+body.has-sdk .col-action { width: 166px; }
 
 .badge {
   display: inline-flex;
