@@ -305,14 +305,116 @@ function applyRowTitles() {
 // ── fnOS 文件选择器 ──────────────────────────────────────────
 let _sdk = null;
 
+let _standalone = false;
 window.__sdkReady.then(ctx => {
   if (ctx.language) semLanguage = ctx.language;
-  if (!ctx.usable) return;   // 低版本系统或独立浏览器窗口：不显示按钮，路径仍可手输
+  if (!ctx.usable && !ctx.standalone) return; // SDK 不可用时保留手动输入
   _sdk = ctx.sdk;
+  _standalone = Boolean(ctx.standalone);
   pathPick.hidden = false;
   pathWrap.classList.add('has-pick');
-  document.body.classList.add('has-sdk');   // 各表格里的「打开目录」据此显隐
+  if (ctx.webHost) document.body.classList.add('has-sdk'); // 「打开目录」仅 Web 宿主桥接可用
 });
+
+// 独立窗口的 App Auth 回调只接受当前 origin、当前 popup 与一次性 state。
+const STANDALONE_AUTH_MESSAGE = 'hashfile:auth-callback';
+const STANDALONE_AUTH_TIMEOUT = 5 * 60 * 1000;
+let _pendingStandaloneAuth = null;
+
+window.addEventListener('message', handleStandaloneAuthMessage);
+
+function createAuthState() {
+  if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+    throw new Error('Secure random values are unavailable');
+  }
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function clearStandaloneAuth(pending, closePopup = false) {
+  if (_pendingStandaloneAuth !== pending) return;
+  _pendingStandaloneAuth = null;
+  clearTimeout(pending.expiry);
+  clearInterval(pending.closeCheck);
+  if (closePopup) {
+    try { if (!pending.popup.closed) pending.popup.close(); } catch { /* 已关闭或不可访问 */ }
+  }
+}
+
+function handleStandaloneAuthMessage(event) {
+  const pending = _pendingStandaloneAuth;
+  if (!pending || event.origin !== window.location.origin || event.source !== pending.popup) return;
+  const message = event.data;
+  if (!message || message.type !== STANDALONE_AUTH_MESSAGE) return;
+  const result = message.result;
+  if (!result || result.state !== pending.state || result.method !== 'pickUserFile' || result.appName !== 'HashFile') return;
+
+  // 一旦请求身份匹配就消费 state，即使宿主返回取消、错误或无效路径也不能重放。
+  clearStandaloneAuth(pending);
+  if (result.status !== 'success' || result.error || !Array.isArray(result.path) ||
+      result.path.length !== 1 || typeof result.path[0] !== 'string' || result.path[0].length === 0) {
+    console.warn('Standalone pickUserFile returned an unsuccessful or invalid callback:', result);
+    return;
+  }
+
+  clearError();
+  setPath(result.path[0]);
+  refreshAccessIfOpen();
+}
+
+function pickStandalonePath(directory) {
+  if (_pendingStandaloneAuth) {
+    showError('授权窗口正在处理中，请完成或关闭窗口后重试');
+    return;
+  }
+
+  let state;
+  try {
+    state = createAuthState();
+  } catch (e) {
+    console.warn('Unable to create standalone authorization state:', e);
+    showError('当前浏览器无法安全启动授权，请改用 fnOS 应用窗口');
+    return;
+  }
+
+  const target = 'hashfile-auth-' + state;
+  const features = 'popup=yes,width=760,height=680,resizable=yes,scrollbars=yes';
+  // 必须在用户点击的同步调用栈里先打开窗口，避免异步构造授权 URL 被浏览器拦截。
+  const popup = window.open('about:blank', target, features);
+  if (!popup) {
+    showError('浏览器拦截了授权窗口，请允许此站点弹出窗口后重试');
+    return;
+  }
+
+  const pending = { state, popup, expiry: null, closeCheck: null };
+  _pendingStandaloneAuth = pending;
+  pending.expiry = setTimeout(() => {
+    clearStandaloneAuth(pending, true);
+    console.warn('Standalone file authorization expired');
+  }, STANDALONE_AUTH_TIMEOUT);
+  pending.closeCheck = setInterval(() => {
+    try {
+      if (popup.closed) clearStandaloneAuth(pending);
+    } catch { clearStandaloneAuth(pending); }
+  }, 500);
+
+  const appBasePath = window.location.pathname.endsWith('/')
+    ? window.location.pathname
+    : window.location.pathname + '/';
+  const redirectUri = appBasePath + 'auth-callback.html';
+  _sdk.openAppAuth('pickUserFile', {
+    appName: 'HashFile',
+    directory,
+    redirectUri,
+    state,
+    sidebarGroup: ['myFiles', 'otherShare', 'external', 'remote', 'favorites', 'team'],
+  }, { target, features }).catch(e => {
+    clearStandaloneAuth(pending, true);
+    console.warn('openAppAuth failed:', e);
+    showError('无法打开 fnOS 授权窗口，请重试');
+  });
+}
 
 // 系统图标走 fnOS 根路径的 /static/…，脱离宿主（本地直连、独立窗口）会 404，
 // 这时换回 emoji，免得留一个破图标
@@ -350,6 +452,10 @@ pathPickMenu.addEventListener('click', e => {
 async function pickPath(directory) {
   closePickMenu();
   if (!_sdk) return;
+  if (_standalone) {
+    pickStandalonePath(directory);
+    return;
+  }
   try {
     // 选择完成后系统会自动把该路径授权给本应用。目录只支持单选，
     // 文件也限定单选：输入框只承载一个路径。
