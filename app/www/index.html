@@ -152,8 +152,8 @@
   <script src="app.js"></script>
   <script type="module">
     // fnOS 微应用 SDK：需 manifest 声明 micro_app=true，且系统 ≥1.2.0401。
-    // 不满足时（低版本、独立浏览器窗口）一律降级为 usable:false。
-    const fallback = { sdk: null, usable: false, language: navigator.language || 'zh-CN' };
+    // 低版本或非微应用环境降级；独立浏览器仍可通过 App Auth 使用文件选择器。
+    const fallback = { sdk: null, usable: false, standalone: false, language: navigator.language || 'zh-CN' };
     try {
       const { TrimApp } = await import('./vendor/trim-web-app.js');
       const sdk = new TrimApp();
@@ -168,7 +168,7 @@
       clearTimeout(timer);
       let language = fallback.language;
       try { language = (await sdk.getPlatformConfig())?.language || language; } catch { /* 用浏览器语言兜底 */ }
-      window.__sdkResolve({ sdk, language, usable: sdk.isWeb && !sdk.isStandaloneWeb });
+      window.__sdkResolve({ sdk, language, usable: sdk.isWeb && !sdk.isStandaloneWeb, standalone: sdk.isWeb && sdk.isStandaloneWeb });
     } catch {
       window.__sdkResolve(fallback);
     }
