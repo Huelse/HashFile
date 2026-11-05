@@ -647,4 +647,5 @@ body.has-sdk .dup-list .btn-open { flex-shrink: 0; }
 @media (max-width: 600px) {
   .form-row { flex-direction: column; gap: 0; }
   .checkbox-label { margin-top: 0; }
+  .col-hash { min-width: 280px; }
 }
