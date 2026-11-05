@@ -313,7 +313,7 @@ window.__sdkReady.then(ctx => {
   _standalone = Boolean(ctx.standalone);
   pathPick.hidden = false;
   pathWrap.classList.add('has-pick');
-  if (!_standalone) document.body.classList.add('has-sdk'); // 「打开目录」仅宿主桥接可用
+  if (ctx.webHost) document.body.classList.add('has-sdk'); // 「打开目录」仅 Web 宿主桥接可用
 });
 
 // 独立窗口的 App Auth 回调只接受当前 origin、当前 popup 与一次性 state。

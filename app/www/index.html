@@ -168,7 +168,10 @@
       clearTimeout(timer);
       let language = fallback.language;
       try { language = (await sdk.getPlatformConfig())?.language || language; } catch { /* 用浏览器语言兜底 */ }
-      window.__sdkResolve({ sdk, language, usable: sdk.isWeb && !sdk.isStandaloneWeb, standalone: sdk.isWeb && sdk.isStandaloneWeb });
+      const standalone = sdk.isWeb && sdk.isStandaloneWeb;
+      // ready() 成功代表 JS SDK 已初始化：Web 宿主可直接调用，原生 App 可用原生桥接，
+      // 独立浏览器则走 openAppAuth。Web + 非 standalone 才有 openFileManager 等宿主 Web 方法。
+      window.__sdkResolve({ sdk, language, usable: !standalone, standalone, webHost: sdk.isWeb && !sdk.isStandaloneWeb });
     } catch {
       window.__sdkResolve(fallback);
     }
